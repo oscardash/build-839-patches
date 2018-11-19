@@ -1,0 +1,3607 @@
+From 47dabc1ec2c8cb5e5d4a80ddaa33ca6839bceea8 Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Thu, 25 Oct 2018 08:35:32 -0700
+Subject: Backend support for MOA dashboard access CR1033
+
+---
+ .../admin/BulkPatientDashboardAction.java     | 38 +++++++++++++++++++
+ .../display/DisplayDrilldownAction.java       | 15 +++++++-
+ .../handler/ExcludeDemographicHandler.java    | 18 +++++++++
+ .../handler/IndicatorTemplateXML.java         | 18 +++++++++
+ 4 files changed, 88 insertions(+), 1 deletion(-)
+
+diff --git a/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java b/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java
+index 3bb4555623..79fc904ab3 100644
+--- a/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java
++++ b/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java
+@@ -43,6 +43,8 @@ import org.oscarehr.util.SpringUtils;
+ import net.sf.json.JSONArray;
+ import net.sf.json.JSONObject;
+ 
++import org.oscarehr.common.dao.PropertyDao;
++import org.oscarehr.common.model.Property;
+ import org.oscarehr.dashboard.handler.DiseaseRegistryHandler;
+ import org.oscarehr.dashboard.handler.ExcludeDemographicHandler;
+ import org.oscarehr.dashboard.handler.MessageHandler;
+@@ -92,6 +94,11 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 			loggedInInfo.getLoggedInProviderNo(),
+ 			parseIntegers(patientIdsJson)
+ 		);
++		String mrp = getMRP(loggedInInfo);
++		if (mrp != loggedInInfo.getLoggedInProviderNo()) {
++			messageHandler.notifyProvider(subject, message, mrp, parseIntegers(patientIdsJson));
++		}
++
+ 
+ 		logger.info(message);
+ 
+@@ -109,6 +116,9 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 
+ 		if (!securityInfoManager.hasPrivilege(loggedInInfo,
+ 				"_dxresearch", SecurityInfoManager.WRITE, null)) {
++			if (loggedInInfo != null && loggedInInfo.getLoggedInProvider() != null) {
++				logger.info("Provider "+loggedInInfo.getLoggedInProvider().getProviderNo()+" does not have write permission on _dxresearch security object");
++			}
+ 			return mapping.findForward("unauthorized");
+ 		}
+ 
+@@ -136,6 +146,10 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 			" with provider no {" + providerNo + "}";
+ 
+ 		messageHandler.notifyProvider(subject, message, providerNo, patientIdList);
++		String mrp = getMRP(loggedInInfo);
++		if (providerNo != mrp) {
++			messageHandler.notifyProvider(subject, message, mrp, patientIdList);
++		}
+ 
+ 		logger.info(message);
+ 
+@@ -189,4 +203,28 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 
+ 		return ints;
+ 	}
++	
++	private String getMRP(LoggedInInfo loggedInInfo) {
++		String providerNo = null;
++		if (loggedInInfo != null) {
++			providerNo = loggedInInfo.getLoggedInProviderNo();
++			String surrogate = surrogateForProvider(providerNo);
++			if (!surrogate.isEmpty()) {
++				providerNo = surrogate;
++			}
++		}
++		return providerNo;
++	}
++	
++	/**
++	 *Retrieve provider for which current provider is acting as a surrogate.
++	 */
++	private static String surrogateForProvider(String surrogate_providerNo) {
++		PropertyDao dao = SpringUtils.getBean(PropertyDao.class);
++		List<Property> props = dao.findByNameAndProvider("surrogate_for_provider", surrogate_providerNo);
++		if(props.size()>0) {
++			return props.get(0).getValue();
++		}
++		return new String();
++	}
+ }
+diff --git a/src/main/java/org/oscarehr/dashboard/display/DisplayDrilldownAction.java b/src/main/java/org/oscarehr/dashboard/display/DisplayDrilldownAction.java
+index d73b015ce2..43c005b093 100644
+--- a/src/main/java/org/oscarehr/dashboard/display/DisplayDrilldownAction.java
++++ b/src/main/java/org/oscarehr/dashboard/display/DisplayDrilldownAction.java
+@@ -29,6 +29,7 @@ import javax.servlet.http.HttpServletRequest;
+ import javax.servlet.http.HttpServletResponse;
+ 
+ import org.apache.commons.lang.StringUtils;
++import org.apache.log4j.Logger;
+ import org.apache.struts.action.ActionForm;
+ import org.apache.struts.action.ActionForward;
+ import org.apache.struts.action.ActionMapping;
+@@ -40,6 +41,7 @@ import org.oscarehr.dashboard.handler.IndicatorTemplateHandler;
+ import org.oscarehr.managers.DashboardManager;
+ import org.oscarehr.managers.SecurityInfoManager;
+ import org.oscarehr.util.LoggedInInfo;
++import org.oscarehr.util.MiscUtils;
+ import org.oscarehr.util.SpringUtils;
+ import org.w3c.dom.NodeList;
+ 
+@@ -47,6 +49,7 @@ public class DisplayDrilldownAction extends DispatchAction  {
+ 	
+ 	private SecurityInfoManager securityInfoManager = SpringUtils.getBean(SecurityInfoManager.class);
+ 	private static DashboardManager dashboardManager = SpringUtils.getBean(DashboardManager.class);
++	private static Logger logger = MiscUtils.getLogger();
+ 	
+ 	public ActionForward unspecified(ActionMapping mapping, ActionForm form, 
+ 			HttpServletRequest request, HttpServletResponse response) {
+@@ -58,9 +61,19 @@ public class DisplayDrilldownAction extends DispatchAction  {
+ 		
+ 		LoggedInInfo loggedInInfo = LoggedInInfo.getLoggedInInfoFromSession(request);
+ 		
+-		if( ! securityInfoManager.hasPrivilege(loggedInInfo, "_dashboardDrilldown", SecurityInfoManager.READ, null ) ) {	
++		if( ! securityInfoManager.hasPrivilege(loggedInInfo, "_dashboardDrilldown", SecurityInfoManager.READ, null ) ) {
++			if (loggedInInfo != null && loggedInInfo.getLoggedInProvider() != null) {
++				logger.info("Provider "+loggedInInfo.getLoggedInProvider().getProviderNo()+" does not have read permission on _dashboardDrilldown security object");
++			}
+ 			return mapping.findForward("unauthorized");
+         }
++		if (!securityInfoManager.hasPrivilege(loggedInInfo,
++				"_dxresearch", SecurityInfoManager.WRITE, null)) {
++			if (loggedInInfo != null && loggedInInfo.getLoggedInProvider() != null) {
++				logger.info("Provider "+loggedInInfo.getLoggedInProvider().getProviderNo()+" does not have write permission on _dxresearch security object");
++			}
++			return mapping.findForward("unauthorized");
++		}
+ 		
+ 		String indicatorTemplateId = request.getParameter("indicatorTemplateId");
+ 
+diff --git a/src/main/java/org/oscarehr/dashboard/handler/ExcludeDemographicHandler.java b/src/main/java/org/oscarehr/dashboard/handler/ExcludeDemographicHandler.java
+index 5701581f74..5af971ca39 100644
+--- a/src/main/java/org/oscarehr/dashboard/handler/ExcludeDemographicHandler.java
++++ b/src/main/java/org/oscarehr/dashboard/handler/ExcludeDemographicHandler.java
+@@ -33,7 +33,9 @@ import java.util.List;
+ import org.apache.log4j.Logger;
+ //import org.oscarehr.common.dao.DemographicExtArchiveDao;
+ import org.oscarehr.common.dao.DemographicExtDao;
++import org.oscarehr.common.dao.PropertyDao;
+ import org.oscarehr.common.model.DemographicExt;
++import org.oscarehr.common.model.Property;
+ import org.oscarehr.dashboard.display.beans.DrilldownBean;
+ import org.oscarehr.managers.DashboardManager;
+ //import org.oscarehr.managers.SecurityInfoManager;
+@@ -170,10 +172,26 @@ public class ExcludeDemographicHandler {
+ 		String providerNo = null;
+ 		if (loggedInInfo != null) {
+ 			providerNo = getLoggedinInfo().getLoggedInProviderNo();
++			String surrogate = surrogateForProvider(providerNo);
++			if (!surrogate.isEmpty()) {
++				providerNo = surrogate;
++			}
+ 		}
+ 		return providerNo;
+ 	}
+ 	
++	/**
++	 *Retrieve provider for which current provider is acting as a surrogate.
++	 */
++	public static String surrogateForProvider(String surrogate_providerNo) {
++		PropertyDao dao = SpringUtils.getBean(PropertyDao.class);
++		List<Property> props = dao.findByNameAndProvider("surrogate_for_provider", surrogate_providerNo);
++		if(props.size()>0) {
++			return props.get(0).getValue();
++		}
++		return new String();
++	}
++	
+ 	// An exclusion is only valid for a finite interval.  The interval may need to be modified
+ 	// based on user feedback.
+ 	private Boolean isCurrentExclusion(DemographicExt de) {
+diff --git a/src/main/java/org/oscarehr/dashboard/handler/IndicatorTemplateXML.java b/src/main/java/org/oscarehr/dashboard/handler/IndicatorTemplateXML.java
+index 74306b4ef3..a58e7c8fb2 100644
+--- a/src/main/java/org/oscarehr/dashboard/handler/IndicatorTemplateXML.java
++++ b/src/main/java/org/oscarehr/dashboard/handler/IndicatorTemplateXML.java
+@@ -29,6 +29,8 @@ import java.util.List;
+ 
+ import org.apache.commons.lang.builder.ReflectionToStringBuilder;
+ import org.apache.log4j.Logger;
++import org.oscarehr.common.dao.PropertyDao;
++import org.oscarehr.common.model.Property;
+ import org.oscarehr.dashboard.query.Column;
+ import org.oscarehr.dashboard.query.Parameter;
+ import org.oscarehr.dashboard.query.RangeInterface;
+@@ -37,6 +39,7 @@ import org.oscarehr.dashboard.query.RangeUpperLimit;
+ import org.oscarehr.dashboard.query.DrillDownAction;
+ import org.oscarehr.util.LoggedInInfo;
+ import org.oscarehr.util.MiscUtils;
++import org.oscarehr.util.SpringUtils;
+ import org.w3c.dom.Document;
+ import org.w3c.dom.Element;
+ import org.w3c.dom.NamedNodeMap;
+@@ -645,6 +648,10 @@ public class IndicatorTemplateXML {
+ 		
+ 		switch( ProviderValueAlias.valueOf( parameterValue ) ) {
+ 		case loggedinprovider : parameterValue = getLoggedInProvider().trim();
++				String surrogate = surrogateForProvider(parameterValue);
++				if (!surrogate.isEmpty()) {
++					parameterValue = surrogate;
++				}
+ 				break;
+ 		
+ 		case all : parameterValue = "%";
+@@ -669,6 +676,17 @@ public class IndicatorTemplateXML {
+ 		this.providerNo = providerNo;
+ 	}
+ 	
++	/**
++	 *Retrieve provider for which current provider is acting as a surrogate.
++	 */
++	public static String surrogateForProvider(String surrogate_providerNo) {
++		PropertyDao dao = SpringUtils.getBean(PropertyDao.class);
++		List<Property> props = dao.findByNameAndProvider("surrogate_for_provider", surrogate_providerNo);
++		if(props.size()>0) {
++			return props.get(0).getValue();
++		}
++		return new String();
++	}
+ 	
+ 	public void setSharedMetricLabel(String sharedMetricLabel) {
+ 		this.sharedMetricLabel = sharedMetricLabel;
+-- 
+2.17.1
+
+
+From d60d420e634744f940e9ce0c5d92a6f766aabf8a Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Thu, 25 Oct 2018 12:11:59 -0700
+Subject: Partially functional user interface for selecting dashboard user
+
+---
+ .../web/DashboardUserPreferenceAction.java    |  92 ++++++++++++++
+ .../resources/oscarResources_en.properties    |   1 +
+ src/main/webapp/WEB-INF/struts-config.xml     |   4 +
+ .../provider/dashboard_user_preference.jsp    | 113 ++++++++++++++++++
+ .../webapp/provider/providerpreference.jsp    |   3 +
+ 5 files changed, 213 insertions(+)
+ create mode 100644 src/main/java/org/oscarehr/provider/web/DashboardUserPreferenceAction.java
+ create mode 100644 src/main/webapp/provider/dashboard_user_preference.jsp
+
+diff --git a/src/main/java/org/oscarehr/provider/web/DashboardUserPreferenceAction.java b/src/main/java/org/oscarehr/provider/web/DashboardUserPreferenceAction.java
+new file mode 100644
+index 0000000000..8183cb9e67
+--- /dev/null
++++ b/src/main/java/org/oscarehr/provider/web/DashboardUserPreferenceAction.java
+@@ -0,0 +1,92 @@
++/**
++ * Copyright (c) 2013-2015. Department of Computer Science, University of Victoria. All Rights Reserved.
++ * This software is published under the GPL GNU General Public License.
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
++ *
++ * This software was written for the
++ * Department of Computer Science
++ * LeadLab
++ * University of Victoria
++ * Victoria, Canada
++ */
++
++package org.oscarehr.provider.web;
++
++import javax.servlet.http.HttpServletRequest;
++import javax.servlet.http.HttpServletResponse;
++
++import org.apache.struts.action.ActionForm;
++import org.apache.struts.action.ActionForward;
++import org.apache.struts.action.ActionMapping;
++import org.apache.struts.actions.DispatchAction;
++import org.oscarehr.common.dao.UserPropertyDAO;
++import org.oscarehr.common.model.UserProperty;
++import org.oscarehr.util.LoggedInInfo;
++import org.oscarehr.util.SpringUtils;
++
++public class DashboardUserPreferenceAction extends DispatchAction {
++
++	private UserPropertyDAO dao = (UserPropertyDAO)SpringUtils.getBean("UserPropertyDAO");
++	
++	@Override	   
++	public ActionForward unspecified(ActionMapping mapping, ActionForm actionform, HttpServletRequest request, HttpServletResponse response) {		   
++		return view(mapping, actionform, request, response);	   
++	}
++	   
++	public ActionForward view(ActionMapping mapping, ActionForm actionform, HttpServletRequest request, HttpServletResponse response) {
++		LoggedInInfo loggedInInfo=LoggedInInfo.getLoggedInInfoFromSession(request);
++		String providerNo=loggedInInfo.getLoggedInProviderNo();
++		UserProperty prop = dao.getProp(providerNo, "surrogate_for_provider");
++		if(prop != null)
++			request.setAttribute("dashboardUser", prop.getValue());
++
++		prop = dao.getProp(providerNo, "dashboard_share");
++		if(prop != null)
++			request.setAttribute("shareDashboard", prop.getValue());
++
++		return mapping.findForward("form");	   
++	}
++	
++	public ActionForward save(ActionMapping mapping, ActionForm actionform, HttpServletRequest request, HttpServletResponse response) {
++		String dashUser = request.getParameter("dashboardUser");
++		String shareDash = request.getParameter("shareDashboard");
++		LoggedInInfo loggedInInfo=LoggedInInfo.getLoggedInInfoFromSession(request);
++		String providerNo=loggedInInfo.getLoggedInProviderNo();
++		
++		if(dashUser != null ) {
++			UserProperty prop = dao.getProp(providerNo, "surrogate_for_provider");
++			if(prop == null) {
++				prop = new UserProperty();
++				prop.setName("surrogate_for_provider");
++				prop.setProviderNo(providerNo);				
++			}
++			prop.setValue(dashUser);
++			dao.saveProp(prop);
++		}
++		
++		if(shareDash != null ) {
++			UserProperty prop = dao.getProp(providerNo, "dashboard_share");
++			if(prop == null) {
++				prop = new UserProperty();
++				prop.setName("dashboard_share");
++				prop.setProviderNo(providerNo);				
++			}
++			prop.setValue(shareDash);
++			dao.saveProp(prop);
++		}
++		
++		return view(mapping,actionform,request,response);
++	}
++}
+diff --git a/src/main/resources/oscarResources_en.properties b/src/main/resources/oscarResources_en.properties
+index 37a23a4cea..94154d836f 100644
+--- a/src/main/resources/oscarResources_en.properties
++++ b/src/main/resources/oscarResources_en.properties
+@@ -7297,6 +7297,7 @@ URL=Url
+ 
+ provider.cppPrefs=Configure eChart CPP
+ provider.olisPrefs=OLIS Preferences
++provider.dashboardUserPrefs=Dashboard User Preference
+ 
+ appointment.searchnext.title=SEARCH RESULTS
+ appointment.searchnext.2ndtitle=SEARCH FOR NEXT AVAILABLE APPOINTMENT
+diff --git a/src/main/webapp/WEB-INF/struts-config.xml b/src/main/webapp/WEB-INF/struts-config.xml
+index 0f595b448b..890c06cc9c 100644
+--- a/src/main/webapp/WEB-INF/struts-config.xml
++++ b/src/main/webapp/WEB-INF/struts-config.xml
+@@ -2462,6 +2462,10 @@
+ 			<forward name="form" path="/provider/olis_preferences.jsp" />
+ 		</action>
+ 
++		<action path="/provider/DashboardUserPreference" type="org.oscarehr.provider.web.DashboardUserPreferenceAction" parameter="method" scope="request" validate="false" input="/provider/dashboard_user_preference.jsp">
++			<forward name="form" path="/provider/dashboard_user_preference.jsp" />
++		</action>
++
+ 		<action path="/eyeform/ExaminationHistory" type="org.oscarehr.eyeform.web.ExaminationHistoryAction" parameter="method">
+ 			<forward name="success" path="/eyeform/examination_history.jsp" />
+ 			<forward name="results" path="/eyeform/examination_history_results.jsp" />
+diff --git a/src/main/webapp/provider/dashboard_user_preference.jsp b/src/main/webapp/provider/dashboard_user_preference.jsp
+new file mode 100644
+index 0000000000..4cd44dd365
+--- /dev/null
++++ b/src/main/webapp/provider/dashboard_user_preference.jsp
+@@ -0,0 +1,113 @@
++<%--
++
++    Copyright (c) 2008-2012 Indivica Inc.
++
++    This software is made available under the terms of the
++    GNU General Public License, Version 2, 1991 (GPLv2).
++    License details are available via "indivica.ca/gplv2"
++    and "gnu.org/licenses/gpl-2.0.html".
++
++--%>
++<%@ include file="/casemgmt/taglibs.jsp"%>
++<%@page import="java.util.*" %>
++<%@page import="org.apache.log4j.Logger" %>
++<%@page import="org.oscarehr.util.SpringUtils" %>
++<%@page import="org.oscarehr.common.model.Provider,org.oscarehr.PMmodule.dao.ProviderDao"%>
++<%
++Logger logger = org.oscarehr.util.MiscUtils.getLogger();
++//Get list of providers           
++String curProviderNo = (String) session.getAttribute("user"); 
++ProviderDao providerDao = (ProviderDao)SpringUtils.getBean("providerDao");
++Provider provider = providerDao.getProvider(curProviderNo);
++
++logger.info("user: " + curProviderNo);
++List<Provider> providerList = null;
++providerList = providerDao.getBillableProviders();
++for (Provider p: providerList) {
++     logger.info("provider: " + p.getFullName());
++}
++%>
++
++<%
++  String curUser_no;
++  curUser_no = (String) session.getAttribute("user");
++
++%>
++<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"
++   "http://www.w3.org/TR/html4/loose.dtd">
++<c:set var="ctx" value="${pageContext.request.contextPath}" scope="request" />
++<html:html>
++<head>
++<script type="text/javascript" src="<%= request.getContextPath() %>/js/global.js"></script>
++<html:base />
++<title><bean:message key="provider.dashboardUserPrefs" /></title>
++
++<link rel="stylesheet" type="text/css" href="../oscarEncounter/encounterStyles.css">
++<link rel="stylesheet" type="text/css" media="all" href="<c:out value="${ctx}"/>/share/calendar/calendar.css" title="win2k-cold-1">
++<script src="<c:out value="${ctx}"/>/share/javascript/prototype.js"	type="text/javascript"></script>
++<script src="<c:out value="${ctx}"/>/share/javascript/scriptaculous.js"	type="text/javascript"></script>
++<script src="<c:out value="${ctx}"/>/js/jquery.js"></script>
++<script>
++	jQuery.noConflict();
++</script>
++
++
++</head>
++
++<body class="BodyStyle" vlink="#0000FF">
++
++<table class="MainTable" id="scrollNumber1" name="encounterTable">
++	<tr class="MainTableTopRow">
++		<td class="MainTableTopRowLeftColumn"><bean:message key="provider.setNoteStaleDate.msgPrefs" /></td>
++		<td style="color: white" class="MainTableTopRowRightColumn"><bean:message key="provider.dashboardUserPrefs" /></td>
++	</tr>
++	<tr>
++		<td class="MainTableLeftColumn">&nbsp;</td>
++		<td class="MainTableRightColumn">
++			<!-- form starts here -->
++			<form action="<c:out value="${ctx}"/>/provider/DashboardUserPreference.do?method=save" method="post">
++			<table width="100%" border="1">
++			<tr>
++				<th width="20%">Default Dashboard User</th>
++				<td colspan="3">
++					<%
++						String val1 = (String)request.getAttribute("surrogateProvider");
++						if(val1 == null) val1 = curProviderNo;
++					%>
++					<select id="surrogateProvider" name="surrogateProvider">
++					<option value="" <%=(val1.equals("")?"selected=\"selected\"":"") %>></option>
++					<%for(Provider p: providerList) {%>
++						<option value="<%=p.getProviderNo()%>"<%=(val1.equals(p.getProviderNo())?"selected=\"selected\"":"") %>><%=p.getFullName()%></option>
++						<%}%>
++					</select>
++				</td>
++			</tr>
++			<tr>
++				<th width="20%">Share With Ontario Common Dashboard</th>
++				<td width="30%">
++					<%
++						val1 = (String)request.getAttribute("sharedMetric");
++						if(val1 == null) val1 = "false";
++					%>
++					<select id="sharedMetric" name="sharedMetric">
++						<option value="" <%=(val1.equals("")?"selected=\"selected\"":"") %>></option>
++						<option value="true" <%=(val1.equals("YES")?"selected=\"selected\"":"") %>>YES</option>
++						<option value="false" <%=(val1.equals("NO")?"selected=\"selected\"":"") %>>NO</option>
++					</select>
++			</td>
++			</tr>
++								
++			
++		</table>
++			<input type="submit" value="Save Changes"/>
++			</form>
++			<!-- end of form -->
++		</td>
++	</tr>
++	<tr>
++		<td class="MainTableBottomRowLeftColumn"></td>
++		<td class="MainTableBottomRowRightColumn"></td>
++	</tr>
++</table>
++</body>
++</html:html>
+diff --git a/src/main/webapp/provider/providerpreference.jsp b/src/main/webapp/provider/providerpreference.jsp
+index 9283755dc5..cf0a2f04f9 100644
+--- a/src/main/webapp/provider/providerpreference.jsp
++++ b/src/main/webapp/provider/providerpreference.jsp
+@@ -742,6 +742,9 @@ Event.observe('rxInteractionWarningLevel', 'change', function(event) {
+       	<tr>
+           <td align="center"><a href=# onClick ="popupPage(400,860,'../provider/OlisPreferences.do');return false;"><bean:message key="provider.olisPrefs" /></a></td>
+       	</tr>
++      	<tr>
++          <td align="center"><a href=# onClick ="popupPage(400,860,'../provider/DashboardUserPreference.do');return false;"><bean:message key="provider.dashboardUserPrefs" /></a></td>
++      	</tr>
+       	<tr>
+           <td align="center"><a href=# onClick ="popupPage(230,860,'../setProviderStaleDate.do?method=viewCommentLab');return false;"><bean:message key="provider.btnDisableAckCommentLab"/></a></td>
+         </tr>
+-- 
+2.17.1
+
+
+From 91b14f708f5758c36340024fa2d502b46fd10a26 Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Thu, 25 Oct 2018 18:04:59 -0700
+Subject: Working version for CR1033
+
+---
+ .../web/DashboardUserPreferenceAction.java     |  9 +++++++--
+ .../provider/dashboard_user_preference.jsp     | 18 +++++++++---------
+ 2 files changed, 16 insertions(+), 11 deletions(-)
+
+diff --git a/src/main/java/org/oscarehr/provider/web/DashboardUserPreferenceAction.java b/src/main/java/org/oscarehr/provider/web/DashboardUserPreferenceAction.java
+index 8183cb9e67..d269f25c24 100644
+--- a/src/main/java/org/oscarehr/provider/web/DashboardUserPreferenceAction.java
++++ b/src/main/java/org/oscarehr/provider/web/DashboardUserPreferenceAction.java
+@@ -35,13 +35,16 @@ import org.oscarehr.common.dao.UserPropertyDAO;
+ import org.oscarehr.common.model.UserProperty;
+ import org.oscarehr.util.LoggedInInfo;
+ import org.oscarehr.util.SpringUtils;
++import org.apache.log4j.Logger;
+ 
+ public class DashboardUserPreferenceAction extends DispatchAction {
+ 
+ 	private UserPropertyDAO dao = (UserPropertyDAO)SpringUtils.getBean("UserPropertyDAO");
++	private Logger logger = org.oscarehr.util.MiscUtils.getLogger();
+ 	
+ 	@Override	   
+-	public ActionForward unspecified(ActionMapping mapping, ActionForm actionform, HttpServletRequest request, HttpServletResponse response) {		   
++	public ActionForward unspecified(ActionMapping mapping, ActionForm actionform, HttpServletRequest request, HttpServletResponse response) {	
++		logger.info("here in unspecified");
+ 		return view(mapping, actionform, request, response);	   
+ 	}
+ 	   
+@@ -49,6 +52,7 @@ public class DashboardUserPreferenceAction extends DispatchAction {
+ 		LoggedInInfo loggedInInfo=LoggedInInfo.getLoggedInInfoFromSession(request);
+ 		String providerNo=loggedInInfo.getLoggedInProviderNo();
+ 		UserProperty prop = dao.getProp(providerNo, "surrogate_for_provider");
++		logger.info("here in view with prop=" + prop);
+ 		if(prop != null)
+ 			request.setAttribute("dashboardUser", prop.getValue());
+ 
+@@ -64,7 +68,8 @@ public class DashboardUserPreferenceAction extends DispatchAction {
+ 		String shareDash = request.getParameter("shareDashboard");
+ 		LoggedInInfo loggedInInfo=LoggedInInfo.getLoggedInInfoFromSession(request);
+ 		String providerNo=loggedInInfo.getLoggedInProviderNo();
+-		
++		logger.info("here in save with dashUser="+dashUser);
++		logger.info("and shareDash="+shareDash);
+ 		if(dashUser != null ) {
+ 			UserProperty prop = dao.getProp(providerNo, "surrogate_for_provider");
+ 			if(prop == null) {
+diff --git a/src/main/webapp/provider/dashboard_user_preference.jsp b/src/main/webapp/provider/dashboard_user_preference.jsp
+index 4cd44dd365..d9c1180c4e 100644
+--- a/src/main/webapp/provider/dashboard_user_preference.jsp
++++ b/src/main/webapp/provider/dashboard_user_preference.jsp
+@@ -23,14 +23,14 @@ Provider provider = providerDao.getProvider(curProviderNo);
+ logger.info("user: " + curProviderNo);
+ List<Provider> providerList = null;
+ providerList = providerDao.getBillableProviders();
+-for (Provider p: providerList) {
+-     logger.info("provider: " + p.getFullName());
+-}
++// for (Provider p: providerList) {
++//      logger.info("provider: " + p.getFullName());
++// }
+ %>
+ 
+ <%
+-  String curUser_no;
+-  curUser_no = (String) session.getAttribute("user");
++//   String curUser_no;
++//   curUser_no = (String) session.getAttribute("user");
+ 
+ %>
+ <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"
+@@ -71,10 +71,10 @@ for (Provider p: providerList) {
+ 				<th width="20%">Default Dashboard User</th>
+ 				<td colspan="3">
+ 					<%
+-						String val1 = (String)request.getAttribute("surrogateProvider");
++						String val1 = (String)request.getAttribute("dashboardUser");
+ 						if(val1 == null) val1 = curProviderNo;
+ 					%>
+-					<select id="surrogateProvider" name="surrogateProvider">
++					<select id="dashboardUser" name="dashboardUser">
+ 					<option value="" <%=(val1.equals("")?"selected=\"selected\"":"") %>></option>
+ 					<%for(Provider p: providerList) {%>
+ 						<option value="<%=p.getProviderNo()%>"<%=(val1.equals(p.getProviderNo())?"selected=\"selected\"":"") %>><%=p.getFullName()%></option>
+@@ -86,10 +86,10 @@ for (Provider p: providerList) {
+ 				<th width="20%">Share With Ontario Common Dashboard</th>
+ 				<td width="30%">
+ 					<%
+-						val1 = (String)request.getAttribute("sharedMetric");
++						val1 = (String)request.getAttribute("shareDashboard");
+ 						if(val1 == null) val1 = "false";
+ 					%>
+-					<select id="sharedMetric" name="sharedMetric">
++					<select id="shareDashboard" name="shareDashboard">
+ 						<option value="" <%=(val1.equals("")?"selected=\"selected\"":"") %>></option>
+ 						<option value="true" <%=(val1.equals("YES")?"selected=\"selected\"":"") %>>YES</option>
+ 						<option value="false" <%=(val1.equals("NO")?"selected=\"selected\"":"") %>>NO</option>
+-- 
+2.17.1
+
+
+From 21c0e92c281989abcd1aa2c1802480180e056d21 Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Sat, 27 Oct 2018 17:41:29 -0700
+Subject: Added close button, check if ON, show previous selection
+
+---
+ src/main/webapp/provider/dashboard_user_preference.jsp | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/src/main/webapp/provider/dashboard_user_preference.jsp b/src/main/webapp/provider/dashboard_user_preference.jsp
+index d9c1180c4e..72fbaeb980 100644
+--- a/src/main/webapp/provider/dashboard_user_preference.jsp
++++ b/src/main/webapp/provider/dashboard_user_preference.jsp
+@@ -82,6 +82,7 @@ providerList = providerDao.getBillableProviders();
+ 					</select>
+ 				</td>
+ 			</tr>
++			<oscar:oscarPropertiesCheck property="billregion" value="ON">
+ 			<tr>
+ 				<th width="20%">Share With Ontario Common Dashboard</th>
+ 				<td width="30%">
+@@ -91,15 +92,17 @@ providerList = providerDao.getBillableProviders();
+ 					%>
+ 					<select id="shareDashboard" name="shareDashboard">
+ 						<option value="" <%=(val1.equals("")?"selected=\"selected\"":"") %>></option>
+-						<option value="true" <%=(val1.equals("YES")?"selected=\"selected\"":"") %>>YES</option>
+-						<option value="false" <%=(val1.equals("NO")?"selected=\"selected\"":"") %>>NO</option>
++						<option value="true" <%=(val1.equals("true")?"selected=\"selected\"":"") %>>YES</option>
++						<option value="false" <%=(val1.equals("false")?"selected=\"selected\"":"") %>>NO</option>
+ 					</select>
+ 			</td>
+ 			</tr>
++			</oscar:oscarPropertiesCheck>
+ 								
+ 			
+ 		</table>
+ 			<input type="submit" value="Save Changes"/>
++			<input type="button" value="Close" onclick="window.close();"/>
+ 			</form>
+ 			<!-- end of form -->
+ 		</td>
+-- 
+2.17.1
+
+
+From 205d7f554aae0fc8fcf33f775f3dc8694964a604 Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Sat, 27 Oct 2018 21:10:46 -0700
+Subject: Hide dashboard preference unless user has dashboard privilege
+
+---
+ src/main/webapp/provider/providerpreference.jsp | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/main/webapp/provider/providerpreference.jsp b/src/main/webapp/provider/providerpreference.jsp
+index cf0a2f04f9..7eeac0c0a5 100644
+--- a/src/main/webapp/provider/providerpreference.jsp
++++ b/src/main/webapp/provider/providerpreference.jsp
+@@ -742,9 +742,11 @@ Event.observe('rxInteractionWarningLevel', 'change', function(event) {
+       	<tr>
+           <td align="center"><a href=# onClick ="popupPage(400,860,'../provider/OlisPreferences.do');return false;"><bean:message key="provider.olisPrefs" /></a></td>
+       	</tr>
++      	<security:oscarSec roleName="<%=roleName$%>" rights="r" objectName="_dashboardDisplay">
+       	<tr>
+           <td align="center"><a href=# onClick ="popupPage(400,860,'../provider/DashboardUserPreference.do');return false;"><bean:message key="provider.dashboardUserPrefs" /></a></td>
+       	</tr>
++      	</security:oscarSec>
+       	<tr>
+           <td align="center"><a href=# onClick ="popupPage(230,860,'../setProviderStaleDate.do?method=viewCommentLab');return false;"><bean:message key="provider.btnDisableAckCommentLab"/></a></td>
+         </tr>
+-- 
+2.17.1
+
+
+From 5e51b80113e095e222292dbb7fbaf21be1cdb041 Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Mon, 29 Oct 2018 09:29:41 -0700
+Subject: Corrected copyright
+
+---
+ .../provider/dashboard_user_preference.jsp    | 33 +++++++++++++------
+ 1 file changed, 23 insertions(+), 10 deletions(-)
+
+diff --git a/src/main/webapp/provider/dashboard_user_preference.jsp b/src/main/webapp/provider/dashboard_user_preference.jsp
+index 72fbaeb980..9538544a57 100644
+--- a/src/main/webapp/provider/dashboard_user_preference.jsp
++++ b/src/main/webapp/provider/dashboard_user_preference.jsp
+@@ -1,13 +1,26 @@
+-<%--
+-
+-    Copyright (c) 2008-2012 Indivica Inc.
+-
+-    This software is made available under the terms of the
+-    GNU General Public License, Version 2, 1991 (GPLv2).
+-    License details are available via "indivica.ca/gplv2"
+-    and "gnu.org/licenses/gpl-2.0.html".
+-
+---%>
++/**
++ * Copyright (c) 2013-2015. Department of Computer Science, University of Victoria. All Rights Reserved.
++ * This software is published under the GPL GNU General Public License.
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
++ *
++ * This software was written for the
++ * Department of Computer Science
++ * LeadLab
++ * University of Victoria
++ * Victoria, Canada
++ */
+ <%@ include file="/casemgmt/taglibs.jsp"%>
+ <%@page import="java.util.*" %>
+ <%@page import="org.apache.log4j.Logger" %>
+-- 
+2.17.1
+
+
+From 3332f34b8571fa81984f336db7918ed325a19fb1 Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Tue, 30 Oct 2018 14:34:59 -0700
+Subject: First pass at CR1003 active patient handler, added indivica header
+ back in since UVic isn't accepted
+
+---
+ ...aphicPatientStatusRosterStatusHandler.java | 111 ++++++++++++++++++
+ .../provider/dashboard_user_preference.jsp    |  60 ++++++----
+ 2 files changed, 148 insertions(+), 23 deletions(-)
+ create mode 100644 src/main/java/org/oscarehr/dashboard/handler/DemographicPatientStatusRosterStatusHandler.java
+
+diff --git a/src/main/java/org/oscarehr/dashboard/handler/DemographicPatientStatusRosterStatusHandler.java b/src/main/java/org/oscarehr/dashboard/handler/DemographicPatientStatusRosterStatusHandler.java
+new file mode 100644
+index 0000000000..e434dab500
+--- /dev/null
++++ b/src/main/java/org/oscarehr/dashboard/handler/DemographicPatientStatusRosterStatusHandler.java
+@@ -0,0 +1,111 @@
++/**
++ * Copyright (c) 2013-2015. Department of Computer Science, University of Victoria. All Rights Reserved.
++ * This software is published under the GPL GNU General Public License.
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
++ *
++ * This software was written for the
++ * Department of Computer Science
++ * LeadLab
++ * University of Victoria
++ * Victoria, Canada
++ */
++
++package org.oscarehr.dashboard.handler;
++
++import org.apache.log4j.Logger;
++import org.oscarehr.util.MiscUtils;
++import org.oscarehr.util.SpringUtils; 
++
++import org.oscarehr.common.model.Demographic; 
++import org.oscarehr.common.dao.DemographicDao; 
++import org.oscarehr.common.dao.DemographicArchiveDao; 
++//import org.oscarehr.common.model.DemographicArchive; 
++import org.oscarehr.common.dao.DemographicExtDao;
++import org.oscarehr.common.dao.DemographicExtArchiveDao; 
++//import org.oscarehr.common.model.DemographicExt; 
++//import org.oscarehr.common.model.DemographicExtArchive; 
++import org.oscarehr.util.LoggedInInfo; 
++
++public class DemographicPatientStatusRosterStatusHandler {
++
++	private static Logger logger = MiscUtils.getLogger();
++    private LoggedInInfo loggedInInfo;
++	static DemographicDao demographicDao = SpringUtils.getBean(DemographicDao.class);
++	DemographicArchiveDao demographicArchiveDao = SpringUtils.getBean(DemographicArchiveDao.class);
++	DemographicExtDao demographicExtDao = SpringUtils.getBean(DemographicExtDao.class);
++	DemographicExtArchiveDao demographicExtArchiveDao = SpringUtils.getBean(DemographicExtArchiveDao.class);
++
++	public Boolean setPatientStatusInactive(String demographicNo) {
++		Demographic demographic = demographicDao.getDemographic(demographicNo);
++		if(demographic != null) {
++			demographic.setPatientStatus("IN");
++			demographic.setPatientStatusDate(null);
++			String providerNo = getProviderNo();
++			if (providerNo != null && !providerNo.isEmpty()) {
++				demographic.setLastUpdateUser(providerNo);
++			} else {
++				return false;
++			}
++			demographic.setLastUpdateDate(new java.util.Date());
++			demographicDao.save(demographic);
++			logger.info("demographic_no="+demographicNo+" set INACTIVE by "+providerNo);
++			return true;
++		}
++		return false;
++	}
++	
++	public Boolean setRosterStatus(String demographicNo, String rosterStatus) {
++		Demographic demographic = demographicDao.getDemographic(demographicNo);
++		if(demographic != null) {
++			demographic.setRosterStatus(rosterStatus);
++			demographic.setRosterDate(null);
++			//TODO: Determine whether we need to do more here to save roster history
++			String providerNo = getProviderNo();
++			if (providerNo != null && !providerNo.isEmpty()) {
++				demographic.setLastUpdateUser(providerNo);
++			} else {
++				return false;
++			}
++			demographic.setLastUpdateDate(new java.util.Date());
++			demographicDao.save(demographic);
++			return true;
++		}
++		return false;
++	}
++
++	public LoggedInInfo getLoggedinInfo() {
++		return loggedInInfo;
++	}
++
++	public void setLoggedinInfo(LoggedInInfo loggedInInfo) {
++		this.loggedInInfo = loggedInInfo;
++	}       
++
++	private String getProviderNo() {
++		String providerNo = null;
++		if (loggedInInfo != null) {
++			providerNo = getLoggedinInfo().getLoggedInProviderNo();
++		}
++		return providerNo;
++	}
++
++	//Do we need to do anything with these tables?
++	//DemographicExt
++	//DemographicArchive
++	//DemographicArchiveExt
++	//Log
++
++}
++    
+diff --git a/src/main/webapp/provider/dashboard_user_preference.jsp b/src/main/webapp/provider/dashboard_user_preference.jsp
+index 9538544a57..c8ebdc6e65 100644
+--- a/src/main/webapp/provider/dashboard_user_preference.jsp
++++ b/src/main/webapp/provider/dashboard_user_preference.jsp
+@@ -1,26 +1,40 @@
+-/**
+- * Copyright (c) 2013-2015. Department of Computer Science, University of Victoria. All Rights Reserved.
+- * This software is published under the GPL GNU General Public License.
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License
+- * as published by the Free Software Foundation; either version 2
+- * of the License, or (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, write to the Free Software
+- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+- *
+- * This software was written for the
+- * Department of Computer Science
+- * LeadLab
+- * University of Victoria
+- * Victoria, Canada
+- */
++<%--
++
++    Copyright (c) 2008-2012 Indivica Inc.
++
++    This software is made available under the terms of the
++    GNU General Public License, Version 2, 1991 (GPLv2).
++    License details are available via "indivica.ca/gplv2"
++    and "gnu.org/licenses/gpl-2.0.html".
++
++--%>
++
++<%--
++
++	Copyright (c) 2013-2015. Department of Computer Science, University of Victoria. All Rights Reserved.
++	This software is published under the GPL GNU General Public License.
++	This program is free software; you can redistribute it and/or
++	modify it under the terms of the GNU General Public License
++	as published by the Free Software Foundation; either version 2
++	of the License, or (at your option) any later version.
++	
++	This program is distributed in the hope that it will be useful,
++	but WITHOUT ANY WARRANTY; without even the implied warranty of
++	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++	GNU General Public License for more details.
++	
++	You should have received a copy of the GNU General Public License
++	along with this program; if not, write to the Free Software
++	Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
++	
++	This software was written for the
++	Department of Computer Science
++	LeadLab
++	University of Victoria
++	Victoria, Canada
++
++--%>
++
+ <%@ include file="/casemgmt/taglibs.jsp"%>
+ <%@page import="java.util.*" %>
+ <%@page import="org.apache.log4j.Logger" %>
+-- 
+2.17.1
+
+
+From b23c9105053e89ea8b134534cb383858b336bd29 Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Tue, 30 Oct 2018 15:00:23 -0700
+Subject: Added json handler method
+
+---
+ ...aphicPatientStatusRosterStatusHandler.java | 27 ++++++++++++++++++-
+ 1 file changed, 26 insertions(+), 1 deletion(-)
+
+diff --git a/src/main/java/org/oscarehr/dashboard/handler/DemographicPatientStatusRosterStatusHandler.java b/src/main/java/org/oscarehr/dashboard/handler/DemographicPatientStatusRosterStatusHandler.java
+index e434dab500..64b8f7fc50 100644
+--- a/src/main/java/org/oscarehr/dashboard/handler/DemographicPatientStatusRosterStatusHandler.java
++++ b/src/main/java/org/oscarehr/dashboard/handler/DemographicPatientStatusRosterStatusHandler.java
+@@ -24,9 +24,13 @@
+ 
+ package org.oscarehr.dashboard.handler;
+ 
++import java.util.List;
++
+ import org.apache.log4j.Logger;
+ import org.oscarehr.util.MiscUtils;
+-import org.oscarehr.util.SpringUtils; 
++import org.oscarehr.util.SpringUtils;
++
++import net.sf.json.JSONArray;
+ 
+ import org.oscarehr.common.model.Demographic; 
+ import org.oscarehr.common.dao.DemographicDao; 
+@@ -46,7 +50,28 @@ public class DemographicPatientStatusRosterStatusHandler {
+ 	DemographicArchiveDao demographicArchiveDao = SpringUtils.getBean(DemographicArchiveDao.class);
+ 	DemographicExtDao demographicExtDao = SpringUtils.getBean(DemographicExtDao.class);
+ 	DemographicExtArchiveDao demographicExtArchiveDao = SpringUtils.getBean(DemographicExtArchiveDao.class);
++	
++	public Boolean setPatientStatusInactiveJson( String jsonString) {
++		Boolean result = false;
++		if( jsonString == null || jsonString.isEmpty()) return false;
++		String providerNo = getProviderNo();
++		if (providerNo == null || providerNo.isEmpty()) return false;
+ 
++		if( ! jsonString.startsWith("[")) {
++			jsonString = "[" + jsonString;
++		}
++		if( ! jsonString.endsWith("]")) {
++			jsonString = jsonString + "]";
++		}
++		JSONArray jsonArray = JSONArray.fromObject( jsonString );
++		Integer arraySize = jsonArray.size();
++		for (int i = 0; i < arraySize; i++) {
++			result = setPatientStatusInactive(jsonArray.getString(i));
++			if (!result) return false;
++		}
++		return true;
++	}
++	
+ 	public Boolean setPatientStatusInactive(String demographicNo) {
+ 		Demographic demographic = demographicDao.getDemographic(demographicNo);
+ 		if(demographic != null) {
+-- 
+2.17.1
+
+
+From 2514f211a893c880ae1618727d4bd3c5fd62d856 Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Tue, 30 Oct 2018 15:53:38 -0700
+Subject: Added bulk patient set inactive action
+
+---
+ .../admin/BulkPatientDashboardAction.java     | 72 ++++++++++++++++---
+ 1 file changed, 63 insertions(+), 9 deletions(-)
+
+diff --git a/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java b/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java
+index 79fc904ab3..c20c5ea2fd 100644
+--- a/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java
++++ b/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java
+@@ -45,6 +45,7 @@ import net.sf.json.JSONObject;
+ 
+ import org.oscarehr.common.dao.PropertyDao;
+ import org.oscarehr.common.model.Property;
++import org.oscarehr.dashboard.handler.DemographicPatientStatusRosterStatusHandler;
+ import org.oscarehr.dashboard.handler.DiseaseRegistryHandler;
+ import org.oscarehr.dashboard.handler.ExcludeDemographicHandler;
+ import org.oscarehr.dashboard.handler.MessageHandler;
+@@ -59,6 +60,8 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 	private ExcludeDemographicHandler excludeDemographicHandler = new ExcludeDemographicHandler();
+ 
+ 	private DiseaseRegistryHandler diseaseRegistryHandler = new DiseaseRegistryHandler();
++	
++	private DemographicPatientStatusRosterStatusHandler demographicPatientStatusRosterStatusHandler = new DemographicPatientStatusRosterStatusHandler();
+ 
+ 	private MessageHandler messageHandler = new MessageHandler();
+ 
+@@ -94,8 +97,8 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 			loggedInInfo.getLoggedInProviderNo(),
+ 			parseIntegers(patientIdsJson)
+ 		);
+-		String mrp = getMRP(loggedInInfo);
+-		if (mrp != loggedInInfo.getLoggedInProviderNo()) {
++		String mrp = getMRP(loggedInInfo.getLoggedInProviderNo());
++		if (mrp != null && mrp != loggedInInfo.getLoggedInProviderNo()) {
+ 			messageHandler.notifyProvider(subject, message, mrp, parseIntegers(patientIdsJson));
+ 		}
+ 
+@@ -146,8 +149,8 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 			" with provider no {" + providerNo + "}";
+ 
+ 		messageHandler.notifyProvider(subject, message, providerNo, patientIdList);
+-		String mrp = getMRP(loggedInInfo);
+-		if (providerNo != mrp) {
++		String mrp = getMRP(providerNo);
++		if (mrp != null && providerNo != mrp) {
+ 			messageHandler.notifyProvider(subject, message, mrp, patientIdList);
+ 		}
+ 
+@@ -177,6 +180,41 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 		return null;
+ 	}
+ 
++	public ActionForward setPatientsInactive(ActionMapping mapping, ActionForm form,
++			HttpServletRequest request, HttpServletResponse response) {
++
++		LoggedInInfo loggedInInfo = LoggedInInfo.getLoggedInInfoFromSession(request);
++		String providerNo = getProviderNo(loggedInInfo);
++		if (!securityInfoManager.hasPrivilege(loggedInInfo, "_demographic", SecurityInfoManager.WRITE, null) ) {
++			logger.info("Provider "+providerNo+" does not have write permission on _demographic security object");
++			return mapping.findForward("unauthorized");
++		}
++
++		demographicPatientStatusRosterStatusHandler.setLoggedinInfo(loggedInInfo);
++
++		String patientIdsJson = request.getParameter("patientIds");
++		demographicPatientStatusRosterStatusHandler.setPatientStatusInactiveJson(patientIdsJson);
++
++		String subject = "Report on bulk setting of patients to inactive.";
++		String message = "Patient demographic_no(s) {" + patientIdsJson +
++			"} set inactive by " + providerNo;
++
++		messageHandler.notifyProvider(
++			subject,
++			message,
++			providerNo,
++			parseIntegers(patientIdsJson)
++		);
++		String mrp = getMRP(providerNo);
++		if (mrp != null && mrp != providerNo) {  // operation done by MOA for doctor
++			messageHandler.notifyProvider(subject, message, mrp, parseIntegers(patientIdsJson));
++		}
++
++		logger.info(message);
++
++		return null;
++	}
++	
+ 	private static JSONArray asJsonArray(String jsonString) {
+ 		if(jsonString == null || jsonString.isEmpty()) {
+ 			return new JSONArray();
+@@ -204,18 +242,34 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 		return ints;
+ 	}
+ 	
+-	private String getMRP(LoggedInInfo loggedInInfo) {
++	private String getProviderNo(LoggedInInfo loggedInInfo) {
+ 		String providerNo = null;
+ 		if (loggedInInfo != null) {
+ 			providerNo = loggedInInfo.getLoggedInProviderNo();
+-			String surrogate = surrogateForProvider(providerNo);
+-			if (!surrogate.isEmpty()) {
+-				providerNo = surrogate;
+-			}
+ 		}
+ 		return providerNo;
+ 	}
+ 	
++//	private String getMRP(LoggedInInfo loggedInInfo) {
++//		String providerNo = null;
++//		if (loggedInInfo != null) {
++//			providerNo = loggedInInfo.getLoggedInProviderNo();
++//			String surrogate = surrogateForProvider(providerNo);
++//			if (!surrogate.isEmpty()) {
++//				providerNo = surrogate;
++//			}
++//		}
++//		return providerNo;
++//	}
++	
++	private String getMRP(String providerNo) {
++		String mrp = surrogateForProvider(providerNo);
++		if (!mrp.isEmpty()) {
++			return mrp;
++		}
++		return null;
++	}
++
+ 	/**
+ 	 *Retrieve provider for which current provider is acting as a surrogate.
+ 	 */
+-- 
+2.17.1
+
+
+From 4aed0a11cad9613215cdeae5d3a0524126c3722c Mon Sep 17 00:00:00 2001
+From: David Rusk <rusk.david@gmail.com>
+Date: Wed, 31 Oct 2018 22:23:31 -0700
+Subject: Added bulk patient status update to dashboard drilldown UI.
+
+---
+ .../dashboard/display/DrilldownDisplay.jsp    | 32 ++++++++++++++++++
+ .../display/drilldownDisplayController.js     | 33 +++++++++++++++++++
+ 2 files changed, 65 insertions(+)
+
+diff --git a/src/main/webapp/web/dashboard/display/DrilldownDisplay.jsp b/src/main/webapp/web/dashboard/display/DrilldownDisplay.jsp
+index 6a81e75289..b993bb8435 100644
+--- a/src/main/webapp/web/dashboard/display/DrilldownDisplay.jsp
++++ b/src/main/webapp/web/dashboard/display/DrilldownDisplay.jsp
+@@ -197,6 +197,16 @@
+ 												</a>
+ 											</li>
+ 										</c:if>
++										
++										<c:if test="${fn:contains(drilldown.actionIds, 'patientStatusUpdate')}">
++											<li>
++												<a href="#"
++													class="dropdown-item"
++													title="Update Patients' Status." id="patientStatusUpdateChecked" >
++													Update Patients' Status
++												</a>
++											</li>
++										</c:if>
+ 									</ul>						 
+ 							    </div>
+ 							</th>
+@@ -410,6 +420,28 @@
+ </div>
+ <!-- End patient exclusion modal panel -->
+ 
++<!-- modal panel for patient status update -->
++<div id="modalConfirmPatientStatusUpdate" class="modal fade" role="dialog">
++	<div class="modal-dialog">
++		<div class="modal-content">
++			<div class="modal-header">
++				<button type="button" class="close" data-dismiss="modal"
++					aria-hidden="true">&times;</button>
++				<h4>Verify Patient Status Update</h4>
++			</div>
++			<div class="modal-body">
++				<p>Are you sure you want to update the status of the selected patients to inactive?</p>
++			</div>
++			<div class="modal-footer">
++				<a href="${ pageContext.request.contextPath }/web/dashboard/display/BulkPatientAction.do?method=setPatientsInactive"
++					id="confirmPatientStatusUpdate" type="submit" class="btn btn-primary">Confirm</a>
++				<button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
++			</div>
++		</div>
++	</div>
++</div>
++<!-- End patient status update modal panel -->
++
+ </div>	<!-- end container -->
+ </body>
+ </html>
+\ No newline at end of file
+diff --git a/src/main/webapp/web/dashboard/display/drilldownDisplayController.js b/src/main/webapp/web/dashboard/display/drilldownDisplayController.js
+index c5257b5b68..6baefd34b4 100644
+--- a/src/main/webapp/web/dashboard/display/drilldownDisplayController.js
++++ b/src/main/webapp/web/dashboard/display/drilldownDisplayController.js
+@@ -406,5 +406,38 @@ $(document).ready( function() {
+ 			}
+ 		});
+ 	});
++
++	$("#patientStatusUpdateChecked").on('click', function(event) {
++		event.preventDefault();
++
++		var patientIds = getSelectedPatientIds();
++
++		if (patientIds.length < 1) {
++			alert("At least one patient must be selected to perform this action.");
++			return;
++		}
++
++		$("#modalConfirmPatientStatusUpdate").modal("show");
++
++	});
++
++	$("#confirmPatientStatusUpdate").on('click', function(event) {
++		event.preventDefault();
++
++		var patientIds = getSelectedPatientIds();
++		// Note that indicatorId is already placed in the href
++		// querystring by the JSP code.
++
++		var url = $(this).attr("href");
++		var data = "patientIds=" + patientIds;
++
++		$.ajax({
++			url: url,
++			data: data,
++			success: function(data) {
++				$("#modalConfirmPatientStatusUpdate").modal("toggle");
++			}
++		});
++	});
+     
+ })
+-- 
+2.17.1
+
+
+From 6b68d712ff9f7699fd6ada901e12f8d878748db6 Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Fri, 2 Nov 2018 13:01:55 -0700
+Subject: Fixed duplicated message bug, change active patient selection wording
+
+---
+ .../admin/BulkPatientDashboardAction.java     | 28 ++++++-------------
+ ...aphicPatientStatusRosterStatusHandler.java |  2 +-
+ .../dashboard/display/DrilldownDisplay.jsp    |  4 +--
+ 3 files changed, 12 insertions(+), 22 deletions(-)
+
+diff --git a/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java b/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java
+index c20c5ea2fd..d022d07c16 100644
+--- a/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java
++++ b/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java
+@@ -70,6 +70,8 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 
+ 		LoggedInInfo loggedInInfo = LoggedInInfo.getLoggedInInfoFromSession(request);
+ 		excludeDemographicHandler.setLoggedinInfo(loggedInInfo);
++		
++		String providerNo = loggedInInfo.getLoggedInProviderNo();
+ 
+ 		String patientIdsJson = request.getParameter("patientIds");
+ 		String indicatorIdString = request.getParameter("indicatorId");
+@@ -94,15 +96,14 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 		messageHandler.notifyProvider(
+ 			subject,
+ 			message,
+-			loggedInInfo.getLoggedInProviderNo(),
++			providerNo,
+ 			parseIntegers(patientIdsJson)
+ 		);
+ 		String mrp = getMRP(loggedInInfo.getLoggedInProviderNo());
+-		if (mrp != null && mrp != loggedInInfo.getLoggedInProviderNo()) {
++		if (!providerNo.equals(mrp)) {
+ 			messageHandler.notifyProvider(subject, message, mrp, parseIntegers(patientIdsJson));
+ 		}
+ 
+-
+ 		logger.info(message);
+ 
+ 		return null;
+@@ -150,7 +151,7 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 
+ 		messageHandler.notifyProvider(subject, message, providerNo, patientIdList);
+ 		String mrp = getMRP(providerNo);
+-		if (mrp != null && providerNo != mrp) {
++		if (!providerNo.equals(mrp)) { // operation done by MOA for doctor
+ 			messageHandler.notifyProvider(subject, message, mrp, patientIdList);
+ 		}
+ 
+@@ -206,7 +207,7 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 			parseIntegers(patientIdsJson)
+ 		);
+ 		String mrp = getMRP(providerNo);
+-		if (mrp != null && mrp != providerNo) {  // operation done by MOA for doctor
++		if (!providerNo.equals(mrp)) {  // operation done by MOA for doctor
+ 			messageHandler.notifyProvider(subject, message, mrp, parseIntegers(patientIdsJson));
+ 		}
+ 
+@@ -249,21 +250,10 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 		}
+ 		return providerNo;
+ 	}
+-	
+-//	private String getMRP(LoggedInInfo loggedInInfo) {
+-//		String providerNo = null;
+-//		if (loggedInInfo != null) {
+-//			providerNo = loggedInInfo.getLoggedInProviderNo();
+-//			String surrogate = surrogateForProvider(providerNo);
+-//			if (!surrogate.isEmpty()) {
+-//				providerNo = surrogate;
+-//			}
+-//		}
+-//		return providerNo;
+-//	}
++
+ 	
+ 	private String getMRP(String providerNo) {
+-		String mrp = surrogateForProvider(providerNo);
++		String mrp = moaForProvider(providerNo);
+ 		if (!mrp.isEmpty()) {
+ 			return mrp;
+ 		}
+@@ -273,7 +263,7 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 	/**
+ 	 *Retrieve provider for which current provider is acting as a surrogate.
+ 	 */
+-	private static String surrogateForProvider(String surrogate_providerNo) {
++	private static String moaForProvider(String surrogate_providerNo) {
+ 		PropertyDao dao = SpringUtils.getBean(PropertyDao.class);
+ 		List<Property> props = dao.findByNameAndProvider("surrogate_for_provider", surrogate_providerNo);
+ 		if(props.size()>0) {
+diff --git a/src/main/java/org/oscarehr/dashboard/handler/DemographicPatientStatusRosterStatusHandler.java b/src/main/java/org/oscarehr/dashboard/handler/DemographicPatientStatusRosterStatusHandler.java
+index 64b8f7fc50..9d6cebf85b 100644
+--- a/src/main/java/org/oscarehr/dashboard/handler/DemographicPatientStatusRosterStatusHandler.java
++++ b/src/main/java/org/oscarehr/dashboard/handler/DemographicPatientStatusRosterStatusHandler.java
+@@ -24,7 +24,7 @@
+ 
+ package org.oscarehr.dashboard.handler;
+ 
+-import java.util.List;
++//import java.util.List;
+ 
+ import org.apache.log4j.Logger;
+ import org.oscarehr.util.MiscUtils;
+diff --git a/src/main/webapp/web/dashboard/display/DrilldownDisplay.jsp b/src/main/webapp/web/dashboard/display/DrilldownDisplay.jsp
+index b993bb8435..b69a869395 100644
+--- a/src/main/webapp/web/dashboard/display/DrilldownDisplay.jsp
++++ b/src/main/webapp/web/dashboard/display/DrilldownDisplay.jsp
+@@ -202,8 +202,8 @@
+ 											<li>
+ 												<a href="#"
+ 													class="dropdown-item"
+-													title="Update Patients' Status." id="patientStatusUpdateChecked" >
+-													Update Patients' Status
++													title="Set Checked Patients Status Inactive." id="patientStatusUpdateChecked" >
++													Set Status Inactive
+ 												</a>
+ 											</li>
+ 										</c:if>
+-- 
+2.17.1
+
+
+From 3143c4733862fb1422226c223988743ff7330cc6 Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Fri, 2 Nov 2018 15:56:28 -0700
+Subject: Write to log table when disease is added
+
+---
+ .../admin/BulkPatientDashboardAction.java          | 14 +++++++++-----
+ .../dashboard/handler/DiseaseRegistryHandler.java  |  5 +++--
+ 2 files changed, 12 insertions(+), 7 deletions(-)
+
+diff --git a/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java b/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java
+index d022d07c16..15ba72a5a7 100644
+--- a/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java
++++ b/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java
+@@ -42,6 +42,8 @@ import org.oscarehr.util.SpringUtils;
+ 
+ import net.sf.json.JSONArray;
+ import net.sf.json.JSONObject;
++import oscar.log.LogAction;
++import oscar.log.LogConst;
+ 
+ import org.oscarehr.common.dao.PropertyDao;
+ import org.oscarehr.common.model.Property;
+@@ -137,11 +139,13 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 			int patientId = patientIds.getInt(i);
+ 			patientIdList.add(patientId);
+ 
+-			diseaseRegistryHandler.addToDiseaseRegistry(
+-				patientId,
+-				icd9code,
+-				providerNo
+-			);
++			Integer drId = diseaseRegistryHandler.addToDiseaseRegistry(
++					patientId,
++					icd9code,
++					providerNo
++					);
++			String ip = request.getRemoteAddr();
++			LogAction.addLog((String) request.getSession().getAttribute("user"), LogConst.ADD, "DX", ""+drId , ip,"");
+ 		}
+ 
+ 		String subject = "Bulk addition to disease registry report.";
+diff --git a/src/main/java/org/oscarehr/dashboard/handler/DiseaseRegistryHandler.java b/src/main/java/org/oscarehr/dashboard/handler/DiseaseRegistryHandler.java
+index a6a38344f6..9f909aaad3 100644
+--- a/src/main/java/org/oscarehr/dashboard/handler/DiseaseRegistryHandler.java
++++ b/src/main/java/org/oscarehr/dashboard/handler/DiseaseRegistryHandler.java
+@@ -51,7 +51,7 @@ public class DiseaseRegistryHandler {
+ 		addToDiseaseRegistry(demographicNo, icd9code, getProviderNo());
+ 	}
+ 
+-	public void addToDiseaseRegistry(int demographicNo, String icd9code, String providerNo) {
++	public Integer addToDiseaseRegistry(int demographicNo, String icd9code, String providerNo) {
+ 		boolean activeEntryExists = dao.activeEntryExists(demographicNo, ICD9_CODING_SYSTEM, icd9code);
+ 		if (activeEntryExists) {
+ 			logger.info(
+@@ -59,7 +59,7 @@ public class DiseaseRegistryHandler {
+ 				") already has active entry for (" +
+ 				icd9code + ")"
+ 			);
+-			return;
++			return null;
+ 		}
+ 
+ 		Dxresearch dx = new Dxresearch();
+@@ -77,6 +77,7 @@ public class DiseaseRegistryHandler {
+ 			") to disease registry for patient (" + demographicNo + ")" +
+ 			" with provider no (" + providerNo + ")"
+ 		);
++		return dx.getId();
+ 	}
+ 	
+     protected LoggedInInfo getLoggedInInfo() {
+-- 
+2.17.1
+
+
+From 2d0f85b86ea421b18f62210cd492dbf6df193a46 Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Sat, 3 Nov 2018 07:51:00 -0700
+Subject: Log set patient inactive action of dashboard bulk update
+
+---
+ .../admin/BulkPatientDashboardAction.java     | 22 +++++++++++--------
+ 1 file changed, 13 insertions(+), 9 deletions(-)
+
+diff --git a/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java b/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java
+index 15ba72a5a7..a2bd19105a 100644
+--- a/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java
++++ b/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java
+@@ -135,6 +135,7 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 		JSONArray patientIds = asJsonArray(patientIdsJson);
+ 		List<Integer> patientIdList = new ArrayList<Integer>();
+ 
++		String ip = request.getRemoteAddr();
+ 		for (int i = 0; i < patientIds.size(); ++i) {
+ 			int patientId = patientIds.getInt(i);
+ 			patientIdList.add(patientId);
+@@ -144,7 +145,6 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 					icd9code,
+ 					providerNo
+ 					);
+-			String ip = request.getRemoteAddr();
+ 			LogAction.addLog((String) request.getSession().getAttribute("user"), LogConst.ADD, "DX", ""+drId , ip,"");
+ 		}
+ 
+@@ -198,21 +198,25 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 		demographicPatientStatusRosterStatusHandler.setLoggedinInfo(loggedInInfo);
+ 
+ 		String patientIdsJson = request.getParameter("patientIds");
+-		demographicPatientStatusRosterStatusHandler.setPatientStatusInactiveJson(patientIdsJson);
++		JSONArray patientIds = asJsonArray(patientIdsJson);
++		List<Integer> patientIdList = new ArrayList<Integer>();
++
++		String ip = request.getRemoteAddr();
++		for (int i = 0; i < patientIds.size(); ++i) {
++			int patientId = patientIds.getInt(i);
++			patientIdList.add(patientId);
++			demographicPatientStatusRosterStatusHandler.setPatientStatusInactive(""+patientId);
++		    LogAction.addLog(providerNo, LogConst.UPDATE, LogConst.CON_DEMOGRAPHIC, ""+patientId, ip, ""+patientId, "patient_status: IN");
++		}
+ 
+ 		String subject = "Report on bulk setting of patients to inactive.";
+ 		String message = "Patient demographic_no(s) {" + patientIdsJson +
+ 			"} set inactive by " + providerNo;
+ 
+-		messageHandler.notifyProvider(
+-			subject,
+-			message,
+-			providerNo,
+-			parseIntegers(patientIdsJson)
+-		);
++		messageHandler.notifyProvider(subject, message, providerNo, patientIdList);
+ 		String mrp = getMRP(providerNo);
+ 		if (!providerNo.equals(mrp)) {  // operation done by MOA for doctor
+-			messageHandler.notifyProvider(subject, message, mrp, parseIntegers(patientIdsJson));
++			messageHandler.notifyProvider(subject, message, mrp, patientIdList);
+ 		}
+ 
+ 		logger.info(message);
+-- 
+2.17.1
+
+
+From 3d25c767df6585ddf1333795b84a9def41ca67af Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Sat, 10 Nov 2018 13:47:06 -0800
+Subject: Work in progress on refactoring MOA
+
+---
+ .../display/DisplayDashboardAction.java       | 30 ++++++++++++-
+ .../display/DisplayDrilldownAction.java       | 20 ++++++++-
+ .../display/DisplayIndicatorAction.java       | 29 ++++++++++---
+ .../display/beans/DashboardBean.java          |  5 +++
+ .../factory/DashboardBeanFactory.java         | 30 ++++++++++++-
+ .../handler/IndicatorTemplateXML.java         | 30 ++++++-------
+ .../dashboard/display/DashboardDisplay.jsp    | 43 +++++++++++++++++++
+ 7 files changed, 164 insertions(+), 23 deletions(-)
+
+diff --git a/src/main/java/org/oscarehr/dashboard/display/DisplayDashboardAction.java b/src/main/java/org/oscarehr/dashboard/display/DisplayDashboardAction.java
+index 11e6e658b2..eac6cee8a7 100644
+--- a/src/main/java/org/oscarehr/dashboard/display/DisplayDashboardAction.java
++++ b/src/main/java/org/oscarehr/dashboard/display/DisplayDashboardAction.java
+@@ -30,15 +30,22 @@ import org.apache.struts.action.ActionForm;
+ import org.apache.struts.action.ActionForward;
+ import org.apache.struts.action.ActionMapping;
+ import org.apache.struts.actions.DispatchAction;
++import org.oscarehr.common.model.Provider;
+ import org.oscarehr.dashboard.display.beans.DashboardBean;
+ import org.oscarehr.managers.DashboardManager;
++import org.oscarehr.managers.ProviderManager2;
+ import org.oscarehr.managers.SecurityInfoManager;
+ import org.oscarehr.util.LoggedInInfo;
+ import org.oscarehr.util.SpringUtils;
++import org.apache.log4j.Logger;
++import org.oscarehr.util.MiscUtils;
++import java.util.List;
+ 
+ public class DisplayDashboardAction extends DispatchAction {
+ 	private SecurityInfoManager securityInfoManager = SpringUtils.getBean(SecurityInfoManager.class);
+ 	private static DashboardManager dashboardManager = SpringUtils.getBean(DashboardManager.class);
++	private ProviderManager2 providerManager = SpringUtils.getBean( ProviderManager2.class );
++	private static Logger logger = MiscUtils.getLogger();
+ 	
+ 	public ActionForward unspecified(ActionMapping mapping, ActionForm form, 
+ 			HttpServletRequest request, HttpServletResponse response) {
+@@ -60,8 +67,29 @@ public class DisplayDashboardAction extends DispatchAction {
+ 		if( dashboardId != null && ! dashboardId.isEmpty() ) {
+ 			id = Integer.parseInt( dashboardId );
+ 		}
++
++		Provider preferredProvider = null;
++		String requestedProviderNo = dashboardManager.getRequestedProviderNo();
++		if (requestedProviderNo != null) {
++			preferredProvider = providerManager.getProvider(loggedInInfo, requestedProviderNo);
++		} else {
++			preferredProvider = loggedInInfo.getLoggedInProvider();
++		}
+ 		
+-		DashboardBean dashboard = dashboardManager.getDashboard(loggedInInfo, id);
++		List<Provider> providers = providerManager.getProviders(loggedInInfo, Boolean.TRUE);
++
++		request.setAttribute("providers", providers);
++		DashboardBean dashboard = null;
++
++		requestedProviderNo = request.getParameter("providerNo");
++		if (requestedProviderNo != null && !requestedProviderNo.isEmpty()) {
++			logger.info("zzz requestedProviderNo: " + requestedProviderNo);
++			preferredProvider = providerManager.getProvider(loggedInInfo, requestedProviderNo);
++			dashboardManager.setRequestProviderNo(requestedProviderNo);
++		}
++		request.setAttribute("preferredProvider", preferredProvider);
++
++		dashboard = dashboardManager.getDashboard(loggedInInfo, id);
+ 
+ 		request.setAttribute("dashboard", dashboard);
+ 
+diff --git a/src/main/java/org/oscarehr/dashboard/display/DisplayDrilldownAction.java b/src/main/java/org/oscarehr/dashboard/display/DisplayDrilldownAction.java
+index 43c005b093..d13dbea106 100644
+--- a/src/main/java/org/oscarehr/dashboard/display/DisplayDrilldownAction.java
++++ b/src/main/java/org/oscarehr/dashboard/display/DisplayDrilldownAction.java
+@@ -82,7 +82,25 @@ public class DisplayDrilldownAction extends DispatchAction  {
+ 			id = Integer.parseInt( indicatorTemplateId );
+ 		}
+ 		
+-		DrilldownBean drilldown = dashboardManager.getDrilldownData(loggedInInfo, id, "null");
++		logger.info("yyy indicatorTemplateId: "+indicatorTemplateId);
++		String providerNo = (String) request.getAttribute("providerNo");
++		//providerNo = "111114";
++		logger.info("yyy providerNo: " + providerNo);
++		logger.info("dashboardManager.getRequestedProviderNo():"+dashboardManager.getRequestedProviderNo());
++		if (dashboardManager.getRequestedProviderNo() != null) {
++		    providerNo = dashboardManager.getRequestedProviderNo();
++        }
++		DrilldownBean drilldown;
++		if (providerNo == null) {
++			drilldown = dashboardManager.getDrilldownData(loggedInInfo, id, "null");
++		} else {
++			drilldown = dashboardManager.getDrilldownData(loggedInInfo, id, providerNo, "null");
++		}
++		if (providerNo != null) {
++			logger.info("yyy setting providerNo attribute");
++			request.setAttribute("providerNo",  providerNo);
++		}
++		logger.info("yyy request.getParameter() "+request.getParameter("providerNo"));
+ 		
+ 		// something must be returned. If not then something is very wrong.
+ 		if ( drilldown == null ) {
+diff --git a/src/main/java/org/oscarehr/dashboard/display/DisplayIndicatorAction.java b/src/main/java/org/oscarehr/dashboard/display/DisplayIndicatorAction.java
+index fb77536848..bc73774c73 100644
+--- a/src/main/java/org/oscarehr/dashboard/display/DisplayIndicatorAction.java
++++ b/src/main/java/org/oscarehr/dashboard/display/DisplayIndicatorAction.java
+@@ -23,24 +23,32 @@
+  */
+ package org.oscarehr.dashboard.display;
+ 
++import java.util.List;
++
+ import javax.servlet.http.HttpServletRequest;
+ import javax.servlet.http.HttpServletResponse;
+ 
++import org.apache.log4j.Logger;
+ import org.apache.struts.action.ActionForm;
+ import org.apache.struts.action.ActionForward;
+ import org.apache.struts.action.ActionMapping;
+ import org.apache.struts.actions.DispatchAction;
++import org.oscarehr.common.model.Provider;
+ import org.oscarehr.dashboard.display.beans.IndicatorBean;
+ import org.oscarehr.managers.DashboardManager;
++import org.oscarehr.managers.ProviderManager2;
+ import org.oscarehr.managers.SecurityInfoManager;
+ import org.oscarehr.util.LoggedInInfo;
++import org.oscarehr.util.MiscUtils;
+ import org.oscarehr.util.SpringUtils;
+ 
+ public class DisplayIndicatorAction extends DispatchAction {
+ 	
++	private static Logger logger = MiscUtils.getLogger();
++	
+ 	private SecurityInfoManager securityInfoManager = SpringUtils.getBean(SecurityInfoManager.class);
+ 	private static DashboardManager dashboardManager = SpringUtils.getBean(DashboardManager.class);
+-	
++
+ 	public ActionForward unspecified(ActionMapping mapping, ActionForm form, 
+ 			HttpServletRequest request, HttpServletResponse response) {
+ 		return null;
+@@ -61,11 +69,22 @@ public class DisplayIndicatorAction extends DispatchAction {
+ 		if( indicatorId != null && ! indicatorId.isEmpty() ) {
+ 			id = Integer.parseInt( indicatorId );
+ 		}
+-		
+-		IndicatorBean indicatorPanelBean = dashboardManager.getIndicatorPanel(loggedInInfo, id);
+-		
++		logger.info("xxx indicatorId: "+indicatorId);
++		String providerNo = request.getParameter("providerNo");
++		//providerNo = "111114";
++		logger.info("xxx providerNo: " +providerNo);
++		IndicatorBean indicatorPanelBean;
++		if (providerNo == null) {
++			indicatorPanelBean = dashboardManager.getIndicatorPanel(loggedInInfo, id);
++		} else {
++			indicatorPanelBean = dashboardManager.getIndicatorPanelForProvider(loggedInInfo, providerNo, id);
++		}
++		if (providerNo != null) {
++			request.setAttribute("providerNo",  providerNo);
++		}
++
+ 		request.setAttribute("indicatorPanel", indicatorPanelBean);
+-		
++
+ 		return mapping.findForward("success");
+ 	}
+ 
+diff --git a/src/main/java/org/oscarehr/dashboard/display/beans/DashboardBean.java b/src/main/java/org/oscarehr/dashboard/display/beans/DashboardBean.java
+index f273219569..59204fe12d 100644
+--- a/src/main/java/org/oscarehr/dashboard/display/beans/DashboardBean.java
++++ b/src/main/java/org/oscarehr/dashboard/display/beans/DashboardBean.java
+@@ -39,6 +39,7 @@ public class DashboardBean {
+ 	private boolean locked;
+ 	
+ 	private Date lastChecked;
++	private String providerNo = null;
+ 	
+ 	// by Indicator Category
+ 	private List<PanelBean> panelBeans;
+@@ -115,6 +116,10 @@ public class DashboardBean {
+ 		this.lastChecked = lastChecked;
+ 	}
+ 
++	public void setProviderNo(String providerNo) {
++		this.providerNo = providerNo;
++	}
++
+ 	@Override
+ 	public String toString() {
+ 	   return ReflectionToStringBuilder.toString(this);
+diff --git a/src/main/java/org/oscarehr/dashboard/factory/DashboardBeanFactory.java b/src/main/java/org/oscarehr/dashboard/factory/DashboardBeanFactory.java
+index 027623a996..cf4e79b502 100644
+--- a/src/main/java/org/oscarehr/dashboard/factory/DashboardBeanFactory.java
++++ b/src/main/java/org/oscarehr/dashboard/factory/DashboardBeanFactory.java
+@@ -58,6 +58,14 @@ public class DashboardBeanFactory {
+ 	public DashboardBeanFactory( LoggedInInfo loggedInInfo, Dashboard dashboardEntity ) {
+ 		this( loggedInInfo, dashboardEntity, null);
+ 	}
++
++	/**
++	 * Parameters cannot be null or empty. This will work if the Indicator Templates are pre-set into the
++	 * DashboardEntity Object.
++	 */
++	public DashboardBeanFactory( LoggedInInfo loggedInInfo, String providerNo, Dashboard dashboardEntity ) {
++		this( loggedInInfo, dashboardEntity,  providerNo,  null);
++	}
+ 	
+ 	/**
+ 	 * Additional IndicatorTemplates parameter incase they are not preset in the Dashboard Entity.
+@@ -77,7 +85,27 @@ public class DashboardBeanFactory {
+ 		setPanelBeans( getDashboardBean(), getIndicatorTemplates() );
+ 		getDashboardBean().setLastChecked( new Date( System.currentTimeMillis() ) );
+ 	}
+-	
++
++	/**
++	 * Additional IndicatorTemplates parameter incase they are not preset in the Dashboard Entity.
++	 */
++	public DashboardBeanFactory( LoggedInInfo loggedInInfo, Dashboard dashboardEntity, String providerNo, List<IndicatorTemplate> indicatorTemplates ) {
++
++		logger.info("Building Dashboard: " + dashboardEntity.getName() );
++
++		setDashboardEntity(dashboardEntity);
++
++		if(indicatorTemplates == null ) {
++			indicatorTemplates = dashboardEntity.getIndicators();
++		}
++
++		setIndicatorTemplates( indicatorTemplates );
++		setDashboardBean( new DashboardBean() );
++		setPanelBeans( getDashboardBean(), getIndicatorTemplates() );
++		getDashboardBean().setLastChecked( new Date( System.currentTimeMillis() ) );
++		getDashboardBean().setProviderNo(providerNo);
++	}
++
+ 	public DashboardBean getDashboardBean() {
+ 		return dashboardBean;
+ 	}
+diff --git a/src/main/java/org/oscarehr/dashboard/handler/IndicatorTemplateXML.java b/src/main/java/org/oscarehr/dashboard/handler/IndicatorTemplateXML.java
+index a58e7c8fb2..2faaf11e7e 100644
+--- a/src/main/java/org/oscarehr/dashboard/handler/IndicatorTemplateXML.java
++++ b/src/main/java/org/oscarehr/dashboard/handler/IndicatorTemplateXML.java
+@@ -648,10 +648,10 @@ public class IndicatorTemplateXML {
+ 		
+ 		switch( ProviderValueAlias.valueOf( parameterValue ) ) {
+ 		case loggedinprovider : parameterValue = getLoggedInProvider().trim();
+-				String surrogate = surrogateForProvider(parameterValue);
+-				if (!surrogate.isEmpty()) {
+-					parameterValue = surrogate;
+-				}
++//				String surrogate = surrogateForProvider(parameterValue);
++//				if (!surrogate.isEmpty()) {
++//					parameterValue = surrogate;
++//				}
+ 				break;
+ 		
+ 		case all : parameterValue = "%";
+@@ -676,17 +676,17 @@ public class IndicatorTemplateXML {
+ 		this.providerNo = providerNo;
+ 	}
+ 	
+-	/**
+-	 *Retrieve provider for which current provider is acting as a surrogate.
+-	 */
+-	public static String surrogateForProvider(String surrogate_providerNo) {
+-		PropertyDao dao = SpringUtils.getBean(PropertyDao.class);
+-		List<Property> props = dao.findByNameAndProvider("surrogate_for_provider", surrogate_providerNo);
+-		if(props.size()>0) {
+-			return props.get(0).getValue();
+-		}
+-		return new String();
+-	}
++//	/**
++//	 *Retrieve provider for which current provider is acting as a surrogate.
++//	 */
++//	public static String surrogateForProvider(String surrogate_providerNo) {
++//		PropertyDao dao = SpringUtils.getBean(PropertyDao.class);
++//		List<Property> props = dao.findByNameAndProvider("surrogate_for_provider", surrogate_providerNo);
++//		if(props.size()>0) {
++//			return props.get(0).getValue();
++//		}
++//		return new String();
++//	}
+ 	
+ 	public void setSharedMetricLabel(String sharedMetricLabel) {
+ 		this.sharedMetricLabel = sharedMetricLabel;
+diff --git a/src/main/webapp/web/dashboard/display/DashboardDisplay.jsp b/src/main/webapp/web/dashboard/display/DashboardDisplay.jsp
+index 6be8bdc7bb..161dad78ea 100644
+--- a/src/main/webapp/web/dashboard/display/DashboardDisplay.jsp
++++ b/src/main/webapp/web/dashboard/display/DashboardDisplay.jsp
+@@ -66,6 +66,48 @@
+ 		</h2>
+ 		<hr />
+ 	</div>
++	<center>
++	<div class="dropdown">
++		<form action="<%=request.getContextPath()%>/web/dashboard/display/DashboardDisplay.do?method=getDashboard&dashboardId=${ dashboard.id }" method="post">
++			<select id="providerNo" name="providerNo">
++			<option value="${ preferredProvider.providerNo }"><c:out value="${ preferredProvider.fullName }"/></option>
++			<c:forEach items="${ providers }" var="provider">
++				<option value="${ provider.providerNo }">
++					<c:out value="${ provider.formattedName }"/>
++				</option>
++			</c:forEach>
++			</select>
++			<input type="submit" value="Change Dashboard Provider"><%-- onclick="newWindow('<%=request.getContextPath()%>/web/dashboard/display/DashboardDisplay.do?method=getDashboard&dashboardId=${ dashboard.id }','dashboard'>)">--%>
++		</form>
++	</div>
++	</center>
++	<div class="form-group">
++			<%--             <div class="dropdown btn-group" id="selectProviderDashboardButtonContainer">
++                                 <button class="btn btn-default dropdown-toggle btn-md" type="button"
++                                         id="providerDashboardMenu" data-toggle="dropdown" aria-haspopup="true" aria-expanded="true">
++                                         <c:out value="Select provider" />
++                                         <span class="caret"></span>
++                                 </button>
++                                 <ul class="dropdown-menu" aria-labelledby="providerDashboardMenu">
++                                                 <li><c:out value="${ providers.get(1).getFullName() }" />
++                                 abc
++                                 def
++                                                 </li>
++                                 </ul>
++                         </div>--%>
++<%--		<center>
++			<div class="col-md-6">
++				<label></label>
++				<select class="form-control required" name="providerNo" id="getDashboard_${ dashboard.id }" >
++					<option value="${ preferredProvider.providerNo }"><c:out value="${ preferredProvider.fullName }"/></option>
++					<c:forEach items="${ providers }" var="provider">
++						<option value="${ provider.providerNo }">
++							<c:out value="${ provider.formattedName }"/>
++						</option>
++					</c:forEach>
++				</select>
++			</div>
++		</center>--%>
+ 	<div class="row dashboardSubHeading" >
+ 		<div class="col-md-6">
+ 			Last loaded: 
+@@ -80,6 +122,7 @@
+ 			</a>
+ 		</div>
+ 	</div>
++	</div>
+ 	<!-- end Dashboard Heading -->
+ 	
+ 	<div class="row dashboardBody">	
+-- 
+2.17.1
+
+
+From 5bf6321941d5dbde1f1924969fa177bdf966e726 Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Sat, 10 Nov 2018 13:47:35 -0800
+Subject: Work in progress on refactoring MOA
+
+---
+ .../oscarehr/managers/DashboardManager.java   | 159 +++++++++++++-----
+ 1 file changed, 120 insertions(+), 39 deletions(-)
+
+diff --git a/src/main/java/org/oscarehr/managers/DashboardManager.java b/src/main/java/org/oscarehr/managers/DashboardManager.java
+index a4baa7a982..771ce386c9 100644
+--- a/src/main/java/org/oscarehr/managers/DashboardManager.java
++++ b/src/main/java/org/oscarehr/managers/DashboardManager.java
+@@ -72,7 +72,8 @@ public class DashboardManager {
+ 	
+ 	@Autowired
+ 	ClinicDAO clinicDAO;
+-	
++
++	private static String requestedProviderNo = null;
+ 	
+ 	private Logger logger = MiscUtils.getLogger();
+ 	/**
+@@ -439,6 +440,45 @@ public class DashboardManager {
+ 		return dashboardBean;
+ 	}
+ 	
++	/**
++	 *  Get an entire Dashboard, with all of its Indicators in a List parameter.
++	 */
++	public DashboardBean getDashboard( LoggedInInfo loggedInInfo, String providerNo, int dashboardId ) {
++
++		DashboardBean dashboardBean = null;
++
++		if( ! securityInfoManager.hasPrivilege(loggedInInfo, "_dashboardDisplay", SecurityInfoManager.READ, null ) ) {
++			LogAction.addLog(loggedInInfo, "DashboardManager.getDashboard", null, null, null,"User missing _dashboardManager role with write access");
++			return dashboardBean;
++        }
++
++		Dashboard dashboardEntity = null;
++		DashboardBeanFactory dashboardBeanFactory = null;
++
++		if( dashboardId > 0 ) {
++			dashboardEntity = dashboardDao.find( dashboardId );
++			List<IndicatorTemplate> indicatorTemplates = getIndicatorTemplatesByDashboardId( loggedInInfo, dashboardId );
++			dashboardEntity.setIndicators( indicatorTemplates );
++		}
++
++		if( dashboardEntity != null ) {
++			// Add the indicators and panels.
++			dashboardBeanFactory = new DashboardBeanFactory( loggedInInfo, providerNo, dashboardEntity );
++		}
++
++		if( dashboardBeanFactory != null ) {
++			dashboardBean = dashboardBeanFactory.getDashboardBean();
++		}
++
++		if( dashboardBean != null ) {
++			LogAction.addLog(loggedInInfo, "DashboardManager.getDashboard", null, null, null,"Returning Dashboard results for Dashboard ID " + dashboardId );
++		} else {
++			LogAction.addLog(loggedInInfo, "DashboardManager.getDashboard", null, null, null,"Failed to return results for Dashboard ID " + dashboardId );
++		}
++
++		return dashboardBean;
++	}
++	
+ 	/**
+ 	 * Get an Indicator Template by Id.
+ 	 */
+@@ -486,6 +526,31 @@ public class DashboardManager {
+ 		
+ 		return indicatorTemplateXML;
+ 	}
++	
++//	/**
++//	 * Get the XML template that contains all the data and meta data for an Indicator display. 
++//	 */
++//	public IndicatorTemplateXML getIndicatorTemplateXML( LoggedInInfo loggedInInfo, String requestedProviderNo, int indicatorTemplateId ) {
++//		
++//		IndicatorTemplateXML indicatorTemplateXML = null;
++//		
++//		if( ! securityInfoManager.hasPrivilege(loggedInInfo, "_dashboardDrilldown", SecurityInfoManager.READ, null ) ) {	
++//			LogAction.addLog(loggedInInfo, "DashboardManager.getIndicatorTemplateXML", null, null, null,"User missing _dashboardDrilldown role with read access");
++//			return indicatorTemplateXML;
++//        }
++//		
++//		IndicatorTemplate indicatorTemplate = getIndicatorTemplate( loggedInInfo, indicatorTemplateId );
++//		IndicatorTemplateHandler templateHandler = new IndicatorTemplateHandler( loggedInInfo, indicatorTemplate.getTemplate().getBytes() );
++//		indicatorTemplateXML = templateHandler.getIndicatorTemplateXML();
++//		
++//		if( indicatorTemplateXML != null ) {
++//			LogAction.addLog(loggedInInfo, "DashboardManager.getIndicatorTemplateXML", null, null, null,"Returning IndicatorTemplateXML Id " + indicatorTemplateId );			
++//		} else {
++//			LogAction.addLog(loggedInInfo, "DashboardManager.getIndicatorTemplateXML", null, null, null,"IndicatorTemplateXML Id " + indicatorTemplateId + " not found." );			
++//		}
++//		
++//		return indicatorTemplateXML;
++//	}
+ 
+ 	public DrilldownBean getDrilldownData( LoggedInInfo loggedInInfo, int indicatorTemplateId, String metricLabel) {
+ 		return getDrilldownData(loggedInInfo,indicatorTemplateId,null, metricLabel);
+@@ -507,6 +572,9 @@ public class DashboardManager {
+ 		IndicatorTemplate indicatorTemplate = getIndicatorTemplate( loggedInInfo, indicatorTemplateId );
+ 		IndicatorTemplateHandler templateHandler = new IndicatorTemplateHandler( loggedInInfo, indicatorTemplate.getTemplate().getBytes() );
+ 		IndicatorTemplateXML indicatorTemplateXML = templateHandler.getIndicatorTemplateXML();
++		if (providerNo != null) {
++			indicatorTemplateXML.setProviderNo(providerNo);
++		}
+ 		
+ 		if( indicatorTemplate != null ) {
+ 			drilldownBeanFactory = new DrilldownBeanFactory( loggedInInfo, indicatorTemplate, providerNo, metricLabel ); 
+@@ -561,6 +629,10 @@ public class DashboardManager {
+         }
+ 		
+ 		IndicatorTemplateXML indicatorTemplateXML = getIndicatorTemplateXML( loggedInInfo, indicatorId );
++
++		if (getRequestedProviderNo() != null) {
++			indicatorTemplateXML.setProviderNo(requestedProviderNo);
++		}
+ 		
+ 		// The id needs to be force set.
+ 		if( indicatorTemplateXML != null ) {
+@@ -628,67 +700,76 @@ public class DashboardManager {
+ 	
+ 	
+ 	public String getSharedOutcomesDashboardLaunchURL(LoggedInInfo loggedInInfo) {
+-		
++
+ 		String url = OscarProperties.getInstance().getProperty("shared_outcomes_dashboard_url");
+-		if(url == null) {
++		if (url == null) {
+ 			return null;
+ 		}
+-		
++
+ 		org.oscarehr.common.model.Clinic oClinic = clinicDAO.getClinic();
+-    	Clinic clinic = new Clinic();
+-    	clinic.setApplication("oscar");
+-    	
+-    	String clinicIdentifier = OscarProperties.getInstance().getProperty("shared_outcomes_dashboard_clinic_id");
+-		
+-		if(clinicIdentifier == null || clinicIdentifier.length() == 0 || clinicIdentifier.length() > 42 ) {
++		Clinic clinic = new Clinic();
++		clinic.setApplication("oscar");
++
++		String clinicIdentifier = OscarProperties.getInstance().getProperty("shared_outcomes_dashboard_clinic_id");
++
++		if (clinicIdentifier == null || clinicIdentifier.length() == 0 || clinicIdentifier.length() > 42) {
+ 			clinicIdentifier = oClinic.getClinicName();
+ 		}
+-		
++
+ 		clinic.setIdentifier(clinicIdentifier);
+-		
+-    	clinic.setName(oClinic.getClinicName());
+-    	
+-    	
+-    	Provider provider = loggedInInfo.getLoggedInProvider();
+-    	
+-    	User user = new User();
+-    	user.setCity("");
+-    	user.setFirstName(provider.getFirstName());
+-    	//TODO: not sure yet how we want to implement this
+-    	//user.setAuthorizedUsernameList(null);
+-    	user.setLastName(provider.getLastName());
+-    	user.setPostalCode("");
+-    	user.setProvince(Province.ON);
+-    	//user.setUniqueIdentifier(uniqueIdentifier);
+-    	user.setUsername(provider.getProviderNo());
+-    	user.setRole("provider");
+-    	
+-    	
++
++		clinic.setName(oClinic.getClinicName());
++
++
++		Provider provider = loggedInInfo.getLoggedInProvider();
++
++		User user = new User();
++		user.setCity("");
++		user.setFirstName(provider.getFirstName());
++		//TODO: not sure yet how we want to implement this
++		//user.setAuthorizedUsernameList(null);
++		user.setLastName(provider.getLastName());
++		user.setPostalCode("");
++		user.setProvince(Province.ON);
++		//user.setUniqueIdentifier(uniqueIdentifier);
++		user.setUsername(provider.getProviderNo());
++		user.setRole("provider");
++
++
+ 		JSONObject response = new JSONObject();
+ 		response.put("clinic", clinic);
+ 		response.put("user", user);
+-		
++
+ 		String json = response.toString();
+-		
++
+ 		logger.debug(json);
+-		
++
+ 		String encrypted = null;
+ 		String b64 = null;
+-		
++
+ 		//system must have the UnlimitedJCEPolicyJDK7.zip installed for this to work
+ 		try {
+ 			Security.addProvider(new BouncyCastleProvider());
+-			
++
+ 			StandardPBEStringEncryptor encrypter = new StandardPBEStringEncryptor();
+ 			encrypter.setAlgorithm("PBEWITHSHA256AND256BITAES-CBC-BC");
+ 			encrypter.setProviderName("BC");
+-			encrypter.setPassword(OscarProperties.getInstance().getProperty("shared_outcomes_dashboard_key"));			
++			encrypter.setPassword(OscarProperties.getInstance().getProperty("shared_outcomes_dashboard_key"));
+ 			encrypted = encrypter.encrypt(json);
+ 			b64 = Base64.toBase64String(encrypted.getBytes());
+-	       } catch(Exception e) {
+-	    	  logger.error("error",e);
+-	       }
++		} catch (Exception e) {
++			logger.error("error", e);
++		}
+ 
+ 		return url + "?" + "encodedParams=" + b64 + "&version=1.1";
+ 	}
++
++	public void setRequestProviderNo(String providerNo) {
++		this.requestedProviderNo = providerNo;
++	}
++
++	public String getRequestedProviderNo() {
++		return requestedProviderNo;
++	}
++
+ }
+-- 
+2.17.1
+
+
+From 7308df5dcca3ea7c9d9234709680c461914df2ab Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Sat, 10 Nov 2018 14:56:00 -0800
+Subject: More cleanup
+
+---
+ .../display/DisplayDashboardAction.java       | 24 +++---
+ .../display/DisplayDrilldownAction.java       |  6 +-
+ .../oscarehr/managers/DashboardManager.java   | 86 ++++---------------
+ 3 files changed, 28 insertions(+), 88 deletions(-)
+
+diff --git a/src/main/java/org/oscarehr/dashboard/display/DisplayDashboardAction.java b/src/main/java/org/oscarehr/dashboard/display/DisplayDashboardAction.java
+index eac6cee8a7..3cdbd447cd 100644
+--- a/src/main/java/org/oscarehr/dashboard/display/DisplayDashboardAction.java
++++ b/src/main/java/org/oscarehr/dashboard/display/DisplayDashboardAction.java
+@@ -67,29 +67,25 @@ public class DisplayDashboardAction extends DispatchAction {
+ 		if( dashboardId != null && ! dashboardId.isEmpty() ) {
+ 			id = Integer.parseInt( dashboardId );
+ 		}
+-
++		
+ 		Provider preferredProvider = null;
+-		String requestedProviderNo = dashboardManager.getRequestedProviderNo();
+-		if (requestedProviderNo != null) {
++		String requestedProviderNo = request.getParameter("providerNo");
++		if (requestedProviderNo != null && !requestedProviderNo.isEmpty()) {
++			logger.info("zzz requestedProviderNo: " + requestedProviderNo);
+ 			preferredProvider = providerManager.getProvider(loggedInInfo, requestedProviderNo);
++			dashboardManager.setRequestedProviderNo(loggedInInfo, requestedProviderNo);
++		} else if (dashboardManager.getRequestedProviderNo(loggedInInfo) != null) {
++			logger.info("using dashboardManager preferred provider");
++			preferredProvider = providerManager.getProvider(loggedInInfo, dashboardManager.getRequestedProviderNo(loggedInInfo));
+ 		} else {
+ 			preferredProvider = loggedInInfo.getLoggedInProvider();
+ 		}
++		request.setAttribute("preferredProvider", preferredProvider);
+ 		
+ 		List<Provider> providers = providerManager.getProviders(loggedInInfo, Boolean.TRUE);
+-
+ 		request.setAttribute("providers", providers);
+-		DashboardBean dashboard = null;
+-
+-		requestedProviderNo = request.getParameter("providerNo");
+-		if (requestedProviderNo != null && !requestedProviderNo.isEmpty()) {
+-			logger.info("zzz requestedProviderNo: " + requestedProviderNo);
+-			preferredProvider = providerManager.getProvider(loggedInInfo, requestedProviderNo);
+-			dashboardManager.setRequestProviderNo(requestedProviderNo);
+-		}
+-		request.setAttribute("preferredProvider", preferredProvider);
+ 
+-		dashboard = dashboardManager.getDashboard(loggedInInfo, id);
++		DashboardBean dashboard = dashboardManager.getDashboard(loggedInInfo, id);
+ 
+ 		request.setAttribute("dashboard", dashboard);
+ 
+diff --git a/src/main/java/org/oscarehr/dashboard/display/DisplayDrilldownAction.java b/src/main/java/org/oscarehr/dashboard/display/DisplayDrilldownAction.java
+index d13dbea106..e6da03c180 100644
+--- a/src/main/java/org/oscarehr/dashboard/display/DisplayDrilldownAction.java
++++ b/src/main/java/org/oscarehr/dashboard/display/DisplayDrilldownAction.java
+@@ -86,9 +86,9 @@ public class DisplayDrilldownAction extends DispatchAction  {
+ 		String providerNo = (String) request.getAttribute("providerNo");
+ 		//providerNo = "111114";
+ 		logger.info("yyy providerNo: " + providerNo);
+-		logger.info("dashboardManager.getRequestedProviderNo():"+dashboardManager.getRequestedProviderNo());
+-		if (dashboardManager.getRequestedProviderNo() != null) {
+-		    providerNo = dashboardManager.getRequestedProviderNo();
++		logger.info("dashboardManager.getRequestedProviderNo():"+dashboardManager.getRequestedProviderNo(loggedInInfo));
++		if (dashboardManager.getRequestedProviderNo(loggedInInfo) != null) {
++		    providerNo = dashboardManager.getRequestedProviderNo(loggedInInfo);
+         }
+ 		DrilldownBean drilldown;
+ 		if (providerNo == null) {
+diff --git a/src/main/java/org/oscarehr/managers/DashboardManager.java b/src/main/java/org/oscarehr/managers/DashboardManager.java
+index 771ce386c9..b731458c96 100644
+--- a/src/main/java/org/oscarehr/managers/DashboardManager.java
++++ b/src/main/java/org/oscarehr/managers/DashboardManager.java
+@@ -23,7 +23,9 @@
+  */
+ package org.oscarehr.managers;
+ import java.security.Security;
++import java.util.HashMap;
+ import java.util.List;
++import java.util.Map;
+ 
+ import org.apache.log4j.Logger;
+ import org.bouncycastle.jce.provider.BouncyCastleProvider;
+@@ -73,7 +75,7 @@ public class DashboardManager {
+ 	@Autowired
+ 	ClinicDAO clinicDAO;
+ 
+-	private static String requestedProviderNo = null;
++	private Map<String,String> requestedProviderNumMap = new HashMap<String, String>();
+ 	
+ 	private Logger logger = MiscUtils.getLogger();
+ 	/**
+@@ -440,45 +442,6 @@ public class DashboardManager {
+ 		return dashboardBean;
+ 	}
+ 	
+-	/**
+-	 *  Get an entire Dashboard, with all of its Indicators in a List parameter.
+-	 */
+-	public DashboardBean getDashboard( LoggedInInfo loggedInInfo, String providerNo, int dashboardId ) {
+-
+-		DashboardBean dashboardBean = null;
+-
+-		if( ! securityInfoManager.hasPrivilege(loggedInInfo, "_dashboardDisplay", SecurityInfoManager.READ, null ) ) {
+-			LogAction.addLog(loggedInInfo, "DashboardManager.getDashboard", null, null, null,"User missing _dashboardManager role with write access");
+-			return dashboardBean;
+-        }
+-
+-		Dashboard dashboardEntity = null;
+-		DashboardBeanFactory dashboardBeanFactory = null;
+-
+-		if( dashboardId > 0 ) {
+-			dashboardEntity = dashboardDao.find( dashboardId );
+-			List<IndicatorTemplate> indicatorTemplates = getIndicatorTemplatesByDashboardId( loggedInInfo, dashboardId );
+-			dashboardEntity.setIndicators( indicatorTemplates );
+-		}
+-
+-		if( dashboardEntity != null ) {
+-			// Add the indicators and panels.
+-			dashboardBeanFactory = new DashboardBeanFactory( loggedInInfo, providerNo, dashboardEntity );
+-		}
+-
+-		if( dashboardBeanFactory != null ) {
+-			dashboardBean = dashboardBeanFactory.getDashboardBean();
+-		}
+-
+-		if( dashboardBean != null ) {
+-			LogAction.addLog(loggedInInfo, "DashboardManager.getDashboard", null, null, null,"Returning Dashboard results for Dashboard ID " + dashboardId );
+-		} else {
+-			LogAction.addLog(loggedInInfo, "DashboardManager.getDashboard", null, null, null,"Failed to return results for Dashboard ID " + dashboardId );
+-		}
+-
+-		return dashboardBean;
+-	}
+-	
+ 	/**
+ 	 * Get an Indicator Template by Id.
+ 	 */
+@@ -526,31 +489,6 @@ public class DashboardManager {
+ 		
+ 		return indicatorTemplateXML;
+ 	}
+-	
+-//	/**
+-//	 * Get the XML template that contains all the data and meta data for an Indicator display. 
+-//	 */
+-//	public IndicatorTemplateXML getIndicatorTemplateXML( LoggedInInfo loggedInInfo, String requestedProviderNo, int indicatorTemplateId ) {
+-//		
+-//		IndicatorTemplateXML indicatorTemplateXML = null;
+-//		
+-//		if( ! securityInfoManager.hasPrivilege(loggedInInfo, "_dashboardDrilldown", SecurityInfoManager.READ, null ) ) {	
+-//			LogAction.addLog(loggedInInfo, "DashboardManager.getIndicatorTemplateXML", null, null, null,"User missing _dashboardDrilldown role with read access");
+-//			return indicatorTemplateXML;
+-//        }
+-//		
+-//		IndicatorTemplate indicatorTemplate = getIndicatorTemplate( loggedInInfo, indicatorTemplateId );
+-//		IndicatorTemplateHandler templateHandler = new IndicatorTemplateHandler( loggedInInfo, indicatorTemplate.getTemplate().getBytes() );
+-//		indicatorTemplateXML = templateHandler.getIndicatorTemplateXML();
+-//		
+-//		if( indicatorTemplateXML != null ) {
+-//			LogAction.addLog(loggedInInfo, "DashboardManager.getIndicatorTemplateXML", null, null, null,"Returning IndicatorTemplateXML Id " + indicatorTemplateId );			
+-//		} else {
+-//			LogAction.addLog(loggedInInfo, "DashboardManager.getIndicatorTemplateXML", null, null, null,"IndicatorTemplateXML Id " + indicatorTemplateId + " not found." );			
+-//		}
+-//		
+-//		return indicatorTemplateXML;
+-//	}
+ 
+ 	public DrilldownBean getDrilldownData( LoggedInInfo loggedInInfo, int indicatorTemplateId, String metricLabel) {
+ 		return getDrilldownData(loggedInInfo,indicatorTemplateId,null, metricLabel);
+@@ -630,8 +568,8 @@ public class DashboardManager {
+ 		
+ 		IndicatorTemplateXML indicatorTemplateXML = getIndicatorTemplateXML( loggedInInfo, indicatorId );
+ 
+-		if (getRequestedProviderNo() != null) {
+-			indicatorTemplateXML.setProviderNo(requestedProviderNo);
++		if (getRequestedProviderNo(loggedInInfo) != null) {
++			indicatorTemplateXML.setProviderNo(getRequestedProviderNo(loggedInInfo));
+ 		}
+ 		
+ 		// The id needs to be force set.
+@@ -764,12 +702,18 @@ public class DashboardManager {
+ 		return url + "?" + "encodedParams=" + b64 + "&version=1.1";
+ 	}
+ 
+-	public void setRequestProviderNo(String providerNo) {
+-		this.requestedProviderNo = providerNo;
++	public void setRequestedProviderNo(LoggedInInfo loggedInInfo, String providerNo) {
++		String loggedInInfoStr = loggedInInfo.getLoggedInProviderNo();
++		if (loggedInInfoStr != null && !loggedInInfoStr.isEmpty())
++			this.requestedProviderNumMap.put(loggedInInfoStr,providerNo);
+ 	}
+ 
+-	public String getRequestedProviderNo() {
+-		return requestedProviderNo;
++	public String getRequestedProviderNo(LoggedInInfo loggedInInfo) {
++		if (loggedInInfo != null) {
++			return this.requestedProviderNumMap.get(loggedInInfo.getLoggedInProviderNo());
++		} else {
++			return null;
++		}
+ 	}
+ 
+ }
+-- 
+2.17.1
+
+
+From f202ff9c00762ce68e6e869ae32c36e37a158074 Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Sat, 10 Nov 2018 20:08:16 -0800
+Subject: Fixed exception in message handling
+
+---
+ .../admin/BulkPatientDashboardAction.java     | 39 +++++++------------
+ .../display/DisplayDashboardAction.java       |  3 +-
+ .../display/DisplayDrilldownAction.java       | 11 +-----
+ .../display/DisplayIndicatorAction.java       | 17 +++-----
+ .../handler/IndicatorTemplateXML.java         |  3 --
+ .../oscarehr/managers/DashboardManager.java   |  4 --
+ 6 files changed, 21 insertions(+), 56 deletions(-)
+
+diff --git a/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java b/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java
+index a2bd19105a..30460b8d71 100644
+--- a/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java
++++ b/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java
+@@ -45,12 +45,13 @@ import net.sf.json.JSONObject;
+ import oscar.log.LogAction;
+ import oscar.log.LogConst;
+ 
+-import org.oscarehr.common.dao.PropertyDao;
+-import org.oscarehr.common.model.Property;
++//import org.oscarehr.common.dao.PropertyDao;
++//import org.oscarehr.common.model.Property;
+ import org.oscarehr.dashboard.handler.DemographicPatientStatusRosterStatusHandler;
+ import org.oscarehr.dashboard.handler.DiseaseRegistryHandler;
+ import org.oscarehr.dashboard.handler.ExcludeDemographicHandler;
+ import org.oscarehr.dashboard.handler.MessageHandler;
++import org.oscarehr.managers.DashboardManager;
+ import org.oscarehr.managers.SecurityInfoManager;
+ 
+ public class BulkPatientDashboardAction extends DispatchAction {
+@@ -58,6 +59,8 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 	private static Logger logger = MiscUtils.getLogger();
+ 
+ 	private SecurityInfoManager securityInfoManager = SpringUtils.getBean(SecurityInfoManager.class);
++	
++	private DashboardManager dashboardManager = SpringUtils.getBean(DashboardManager.class);
+ 
+ 	private ExcludeDemographicHandler excludeDemographicHandler = new ExcludeDemographicHandler();
+ 
+@@ -101,8 +104,8 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 			providerNo,
+ 			parseIntegers(patientIdsJson)
+ 		);
+-		String mrp = getMRP(loggedInInfo.getLoggedInProviderNo());
+-		if (!providerNo.equals(mrp)) {
++		String mrp = getMRP(loggedInInfo);
++		if (mrp != null && !providerNo.equals(mrp)) {
+ 			messageHandler.notifyProvider(subject, message, mrp, parseIntegers(patientIdsJson));
+ 		}
+ 
+@@ -154,8 +157,8 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 			" with provider no {" + providerNo + "}";
+ 
+ 		messageHandler.notifyProvider(subject, message, providerNo, patientIdList);
+-		String mrp = getMRP(providerNo);
+-		if (!providerNo.equals(mrp)) { // operation done by MOA for doctor
++		String mrp = getMRP(loggedInInfo);
++		if (mrp != null && !providerNo.equals(mrp)) { // operation done by MOA for doctor
+ 			messageHandler.notifyProvider(subject, message, mrp, patientIdList);
+ 		}
+ 
+@@ -214,8 +217,8 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 			"} set inactive by " + providerNo;
+ 
+ 		messageHandler.notifyProvider(subject, message, providerNo, patientIdList);
+-		String mrp = getMRP(providerNo);
+-		if (!providerNo.equals(mrp)) {  // operation done by MOA for doctor
++		String mrp = getMRP(loggedInInfo);
++		if (mrp != null && !providerNo.equals(mrp)) {  // operation done by MOA for doctor
+ 			messageHandler.notifyProvider(subject, message, mrp, patientIdList);
+ 		}
+ 
+@@ -259,24 +262,8 @@ public class BulkPatientDashboardAction extends DispatchAction {
+ 		return providerNo;
+ 	}
+ 
+-	
+-	private String getMRP(String providerNo) {
+-		String mrp = moaForProvider(providerNo);
+-		if (!mrp.isEmpty()) {
+-			return mrp;
+-		}
+-		return null;
++	private String getMRP(LoggedInInfo loggedInInfo) {
++		return dashboardManager.getRequestedProviderNo(loggedInInfo);
+ 	}
+ 
+-	/**
+-	 *Retrieve provider for which current provider is acting as a surrogate.
+-	 */
+-	private static String moaForProvider(String surrogate_providerNo) {
+-		PropertyDao dao = SpringUtils.getBean(PropertyDao.class);
+-		List<Property> props = dao.findByNameAndProvider("surrogate_for_provider", surrogate_providerNo);
+-		if(props.size()>0) {
+-			return props.get(0).getValue();
+-		}
+-		return new String();
+-	}
+ }
+diff --git a/src/main/java/org/oscarehr/dashboard/display/DisplayDashboardAction.java b/src/main/java/org/oscarehr/dashboard/display/DisplayDashboardAction.java
+index 3cdbd447cd..fa8faa8c12 100644
+--- a/src/main/java/org/oscarehr/dashboard/display/DisplayDashboardAction.java
++++ b/src/main/java/org/oscarehr/dashboard/display/DisplayDashboardAction.java
+@@ -71,11 +71,10 @@ public class DisplayDashboardAction extends DispatchAction {
+ 		Provider preferredProvider = null;
+ 		String requestedProviderNo = request.getParameter("providerNo");
+ 		if (requestedProviderNo != null && !requestedProviderNo.isEmpty()) {
+-			logger.info("zzz requestedProviderNo: " + requestedProviderNo);
++			logger.info("DashboardDisplay of provider_no " + requestedProviderNo + " requested by provider_no " + loggedInInfo.getLoggedInProviderNo() );
+ 			preferredProvider = providerManager.getProvider(loggedInInfo, requestedProviderNo);
+ 			dashboardManager.setRequestedProviderNo(loggedInInfo, requestedProviderNo);
+ 		} else if (dashboardManager.getRequestedProviderNo(loggedInInfo) != null) {
+-			logger.info("using dashboardManager preferred provider");
+ 			preferredProvider = providerManager.getProvider(loggedInInfo, dashboardManager.getRequestedProviderNo(loggedInInfo));
+ 		} else {
+ 			preferredProvider = loggedInInfo.getLoggedInProvider();
+diff --git a/src/main/java/org/oscarehr/dashboard/display/DisplayDrilldownAction.java b/src/main/java/org/oscarehr/dashboard/display/DisplayDrilldownAction.java
+index e6da03c180..886acb59d5 100644
+--- a/src/main/java/org/oscarehr/dashboard/display/DisplayDrilldownAction.java
++++ b/src/main/java/org/oscarehr/dashboard/display/DisplayDrilldownAction.java
+@@ -82,11 +82,7 @@ public class DisplayDrilldownAction extends DispatchAction  {
+ 			id = Integer.parseInt( indicatorTemplateId );
+ 		}
+ 		
+-		logger.info("yyy indicatorTemplateId: "+indicatorTemplateId);
+-		String providerNo = (String) request.getAttribute("providerNo");
+-		//providerNo = "111114";
+-		logger.info("yyy providerNo: " + providerNo);
+-		logger.info("dashboardManager.getRequestedProviderNo():"+dashboardManager.getRequestedProviderNo(loggedInInfo));
++		String providerNo = null;
+ 		if (dashboardManager.getRequestedProviderNo(loggedInInfo) != null) {
+ 		    providerNo = dashboardManager.getRequestedProviderNo(loggedInInfo);
+         }
+@@ -96,11 +92,6 @@ public class DisplayDrilldownAction extends DispatchAction  {
+ 		} else {
+ 			drilldown = dashboardManager.getDrilldownData(loggedInInfo, id, providerNo, "null");
+ 		}
+-		if (providerNo != null) {
+-			logger.info("yyy setting providerNo attribute");
+-			request.setAttribute("providerNo",  providerNo);
+-		}
+-		logger.info("yyy request.getParameter() "+request.getParameter("providerNo"));
+ 		
+ 		// something must be returned. If not then something is very wrong.
+ 		if ( drilldown == null ) {
+diff --git a/src/main/java/org/oscarehr/dashboard/display/DisplayIndicatorAction.java b/src/main/java/org/oscarehr/dashboard/display/DisplayIndicatorAction.java
+index bc73774c73..667502ef4c 100644
+--- a/src/main/java/org/oscarehr/dashboard/display/DisplayIndicatorAction.java
++++ b/src/main/java/org/oscarehr/dashboard/display/DisplayIndicatorAction.java
+@@ -23,8 +23,6 @@
+  */
+ package org.oscarehr.dashboard.display;
+ 
+-import java.util.List;
+-
+ import javax.servlet.http.HttpServletRequest;
+ import javax.servlet.http.HttpServletResponse;
+ 
+@@ -33,10 +31,8 @@ import org.apache.struts.action.ActionForm;
+ import org.apache.struts.action.ActionForward;
+ import org.apache.struts.action.ActionMapping;
+ import org.apache.struts.actions.DispatchAction;
+-import org.oscarehr.common.model.Provider;
+ import org.oscarehr.dashboard.display.beans.IndicatorBean;
+ import org.oscarehr.managers.DashboardManager;
+-import org.oscarehr.managers.ProviderManager2;
+ import org.oscarehr.managers.SecurityInfoManager;
+ import org.oscarehr.util.LoggedInInfo;
+ import org.oscarehr.util.MiscUtils;
+@@ -69,19 +65,18 @@ public class DisplayIndicatorAction extends DispatchAction {
+ 		if( indicatorId != null && ! indicatorId.isEmpty() ) {
+ 			id = Integer.parseInt( indicatorId );
+ 		}
+-		logger.info("xxx indicatorId: "+indicatorId);
+-		String providerNo = request.getParameter("providerNo");
+-		//providerNo = "111114";
+-		logger.info("xxx providerNo: " +providerNo);
++
++		String providerNo = null;
++		if (dashboardManager.getRequestedProviderNo(loggedInInfo) != null) {
++		    providerNo = dashboardManager.getRequestedProviderNo(loggedInInfo);
++        }
++
+ 		IndicatorBean indicatorPanelBean;
+ 		if (providerNo == null) {
+ 			indicatorPanelBean = dashboardManager.getIndicatorPanel(loggedInInfo, id);
+ 		} else {
+ 			indicatorPanelBean = dashboardManager.getIndicatorPanelForProvider(loggedInInfo, providerNo, id);
+ 		}
+-		if (providerNo != null) {
+-			request.setAttribute("providerNo",  providerNo);
+-		}
+ 
+ 		request.setAttribute("indicatorPanel", indicatorPanelBean);
+ 
+diff --git a/src/main/java/org/oscarehr/dashboard/handler/IndicatorTemplateXML.java b/src/main/java/org/oscarehr/dashboard/handler/IndicatorTemplateXML.java
+index 2faaf11e7e..3580a624c0 100644
+--- a/src/main/java/org/oscarehr/dashboard/handler/IndicatorTemplateXML.java
++++ b/src/main/java/org/oscarehr/dashboard/handler/IndicatorTemplateXML.java
+@@ -29,8 +29,6 @@ import java.util.List;
+ 
+ import org.apache.commons.lang.builder.ReflectionToStringBuilder;
+ import org.apache.log4j.Logger;
+-import org.oscarehr.common.dao.PropertyDao;
+-import org.oscarehr.common.model.Property;
+ import org.oscarehr.dashboard.query.Column;
+ import org.oscarehr.dashboard.query.Parameter;
+ import org.oscarehr.dashboard.query.RangeInterface;
+@@ -39,7 +37,6 @@ import org.oscarehr.dashboard.query.RangeUpperLimit;
+ import org.oscarehr.dashboard.query.DrillDownAction;
+ import org.oscarehr.util.LoggedInInfo;
+ import org.oscarehr.util.MiscUtils;
+-import org.oscarehr.util.SpringUtils;
+ import org.w3c.dom.Document;
+ import org.w3c.dom.Element;
+ import org.w3c.dom.NamedNodeMap;
+diff --git a/src/main/java/org/oscarehr/managers/DashboardManager.java b/src/main/java/org/oscarehr/managers/DashboardManager.java
+index b731458c96..53ac78919b 100644
+--- a/src/main/java/org/oscarehr/managers/DashboardManager.java
++++ b/src/main/java/org/oscarehr/managers/DashboardManager.java
+@@ -568,10 +568,6 @@ public class DashboardManager {
+ 		
+ 		IndicatorTemplateXML indicatorTemplateXML = getIndicatorTemplateXML( loggedInInfo, indicatorId );
+ 
+-		if (getRequestedProviderNo(loggedInInfo) != null) {
+-			indicatorTemplateXML.setProviderNo(getRequestedProviderNo(loggedInInfo));
+-		}
+-		
+ 		// The id needs to be force set.
+ 		if( indicatorTemplateXML != null ) {
+ 			indicatorTemplateXML.setId( indicatorId );
+-- 
+2.17.1
+
+
+From 1352c552238af8d01d3092f6545b1c0e4aeafcd0 Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Sat, 10 Nov 2018 21:33:24 -0800
+Subject: Removed unused code
+
+---
+ .../admin/BulkPatientDashboardAction.java     |   2 -
+ .../display/beans/DashboardBean.java          |   5 -
+ .../factory/DashboardBeanFactory.java         |  30 +---
+ .../handler/ExcludeDemographicHandler.java    |  27 +---
+ .../handler/IndicatorTemplateXML.java         |  15 --
+ .../oscarehr/managers/DashboardManager.java   |  78 +++++-----
+ .../web/DashboardUserPreferenceAction.java    |  97 ------------
+ .../resources/oscarResources_en.properties    |   1 -
+ src/main/webapp/WEB-INF/struts-config.xml     |   4 -
+ .../provider/dashboard_user_preference.jsp    | 143 ------------------
+ .../webapp/provider/providerpreference.jsp    |   5 -
+ .../dashboard/display/DashboardDisplay.jsp    |  30 +---
+ 12 files changed, 47 insertions(+), 390 deletions(-)
+ delete mode 100644 src/main/java/org/oscarehr/provider/web/DashboardUserPreferenceAction.java
+ delete mode 100644 src/main/webapp/provider/dashboard_user_preference.jsp
+
+diff --git a/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java b/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java
+index 30460b8d71..8c4445c39a 100644
+--- a/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java
++++ b/src/main/java/org/oscarehr/dashboard/admin/BulkPatientDashboardAction.java
+@@ -45,8 +45,6 @@ import net.sf.json.JSONObject;
+ import oscar.log.LogAction;
+ import oscar.log.LogConst;
+ 
+-//import org.oscarehr.common.dao.PropertyDao;
+-//import org.oscarehr.common.model.Property;
+ import org.oscarehr.dashboard.handler.DemographicPatientStatusRosterStatusHandler;
+ import org.oscarehr.dashboard.handler.DiseaseRegistryHandler;
+ import org.oscarehr.dashboard.handler.ExcludeDemographicHandler;
+diff --git a/src/main/java/org/oscarehr/dashboard/display/beans/DashboardBean.java b/src/main/java/org/oscarehr/dashboard/display/beans/DashboardBean.java
+index 59204fe12d..f273219569 100644
+--- a/src/main/java/org/oscarehr/dashboard/display/beans/DashboardBean.java
++++ b/src/main/java/org/oscarehr/dashboard/display/beans/DashboardBean.java
+@@ -39,7 +39,6 @@ public class DashboardBean {
+ 	private boolean locked;
+ 	
+ 	private Date lastChecked;
+-	private String providerNo = null;
+ 	
+ 	// by Indicator Category
+ 	private List<PanelBean> panelBeans;
+@@ -116,10 +115,6 @@ public class DashboardBean {
+ 		this.lastChecked = lastChecked;
+ 	}
+ 
+-	public void setProviderNo(String providerNo) {
+-		this.providerNo = providerNo;
+-	}
+-
+ 	@Override
+ 	public String toString() {
+ 	   return ReflectionToStringBuilder.toString(this);
+diff --git a/src/main/java/org/oscarehr/dashboard/factory/DashboardBeanFactory.java b/src/main/java/org/oscarehr/dashboard/factory/DashboardBeanFactory.java
+index cf4e79b502..027623a996 100644
+--- a/src/main/java/org/oscarehr/dashboard/factory/DashboardBeanFactory.java
++++ b/src/main/java/org/oscarehr/dashboard/factory/DashboardBeanFactory.java
+@@ -58,14 +58,6 @@ public class DashboardBeanFactory {
+ 	public DashboardBeanFactory( LoggedInInfo loggedInInfo, Dashboard dashboardEntity ) {
+ 		this( loggedInInfo, dashboardEntity, null);
+ 	}
+-
+-	/**
+-	 * Parameters cannot be null or empty. This will work if the Indicator Templates are pre-set into the
+-	 * DashboardEntity Object.
+-	 */
+-	public DashboardBeanFactory( LoggedInInfo loggedInInfo, String providerNo, Dashboard dashboardEntity ) {
+-		this( loggedInInfo, dashboardEntity,  providerNo,  null);
+-	}
+ 	
+ 	/**
+ 	 * Additional IndicatorTemplates parameter incase they are not preset in the Dashboard Entity.
+@@ -85,27 +77,7 @@ public class DashboardBeanFactory {
+ 		setPanelBeans( getDashboardBean(), getIndicatorTemplates() );
+ 		getDashboardBean().setLastChecked( new Date( System.currentTimeMillis() ) );
+ 	}
+-
+-	/**
+-	 * Additional IndicatorTemplates parameter incase they are not preset in the Dashboard Entity.
+-	 */
+-	public DashboardBeanFactory( LoggedInInfo loggedInInfo, Dashboard dashboardEntity, String providerNo, List<IndicatorTemplate> indicatorTemplates ) {
+-
+-		logger.info("Building Dashboard: " + dashboardEntity.getName() );
+-
+-		setDashboardEntity(dashboardEntity);
+-
+-		if(indicatorTemplates == null ) {
+-			indicatorTemplates = dashboardEntity.getIndicators();
+-		}
+-
+-		setIndicatorTemplates( indicatorTemplates );
+-		setDashboardBean( new DashboardBean() );
+-		setPanelBeans( getDashboardBean(), getIndicatorTemplates() );
+-		getDashboardBean().setLastChecked( new Date( System.currentTimeMillis() ) );
+-		getDashboardBean().setProviderNo(providerNo);
+-	}
+-
++	
+ 	public DashboardBean getDashboardBean() {
+ 		return dashboardBean;
+ 	}
+diff --git a/src/main/java/org/oscarehr/dashboard/handler/ExcludeDemographicHandler.java b/src/main/java/org/oscarehr/dashboard/handler/ExcludeDemographicHandler.java
+index 5af971ca39..f9a2d1efbc 100644
+--- a/src/main/java/org/oscarehr/dashboard/handler/ExcludeDemographicHandler.java
++++ b/src/main/java/org/oscarehr/dashboard/handler/ExcludeDemographicHandler.java
+@@ -26,23 +26,18 @@ package org.oscarehr.dashboard.handler;
+ 
+ import java.util.ArrayList;
+ import java.util.Date;
+-//import java.util.ArrayList;
+ import java.util.List;
+-//import java.util.Objects;
+ 
+ import org.apache.log4j.Logger;
+ //import org.oscarehr.common.dao.DemographicExtArchiveDao;
+ import org.oscarehr.common.dao.DemographicExtDao;
+-import org.oscarehr.common.dao.PropertyDao;
+ import org.oscarehr.common.model.DemographicExt;
+-import org.oscarehr.common.model.Property;
+ import org.oscarehr.dashboard.display.beans.DrilldownBean;
+ import org.oscarehr.managers.DashboardManager;
+ //import org.oscarehr.managers.SecurityInfoManager;
+ import org.oscarehr.util.LoggedInInfo;
+ import org.oscarehr.util.MiscUtils;
+ import org.oscarehr.util.SpringUtils;
+-//import org.springframework.beans.factory.annotation.Autowired;
+ 
+ import net.sf.json.JSONArray;
+ 
+@@ -50,7 +45,9 @@ public class ExcludeDemographicHandler {
+ 	
+ 	private static Logger logger = MiscUtils.getLogger();
+ 	
+-	static DemographicExtDao demographicExtDao = SpringUtils.getBean(DemographicExtDao.class);
++	private static DemographicExtDao demographicExtDao = SpringUtils.getBean(DemographicExtDao.class);
++	private DashboardManager dashboardManager = SpringUtils.getBean(DashboardManager.class);
++	
+ 	List<Integer> demoIds;
+ 	List<DemographicExt> demoExts;
+ 	private LoggedInInfo loggedInInfo;
+@@ -172,26 +169,14 @@ public class ExcludeDemographicHandler {
+ 		String providerNo = null;
+ 		if (loggedInInfo != null) {
+ 			providerNo = getLoggedinInfo().getLoggedInProviderNo();
+-			String surrogate = surrogateForProvider(providerNo);
+-			if (!surrogate.isEmpty()) {
+-				providerNo = surrogate;
++			String mrp = dashboardManager.getRequestedProviderNo(loggedInInfo);
++			if (mrp != null && !mrp.isEmpty()) {
++				providerNo = mrp;
+ 			}
+ 		}
+ 		return providerNo;
+ 	}
+ 	
+-	/**
+-	 *Retrieve provider for which current provider is acting as a surrogate.
+-	 */
+-	public static String surrogateForProvider(String surrogate_providerNo) {
+-		PropertyDao dao = SpringUtils.getBean(PropertyDao.class);
+-		List<Property> props = dao.findByNameAndProvider("surrogate_for_provider", surrogate_providerNo);
+-		if(props.size()>0) {
+-			return props.get(0).getValue();
+-		}
+-		return new String();
+-	}
+-	
+ 	// An exclusion is only valid for a finite interval.  The interval may need to be modified
+ 	// based on user feedback.
+ 	private Boolean isCurrentExclusion(DemographicExt de) {
+diff --git a/src/main/java/org/oscarehr/dashboard/handler/IndicatorTemplateXML.java b/src/main/java/org/oscarehr/dashboard/handler/IndicatorTemplateXML.java
+index 3580a624c0..74306b4ef3 100644
+--- a/src/main/java/org/oscarehr/dashboard/handler/IndicatorTemplateXML.java
++++ b/src/main/java/org/oscarehr/dashboard/handler/IndicatorTemplateXML.java
+@@ -645,10 +645,6 @@ public class IndicatorTemplateXML {
+ 		
+ 		switch( ProviderValueAlias.valueOf( parameterValue ) ) {
+ 		case loggedinprovider : parameterValue = getLoggedInProvider().trim();
+-//				String surrogate = surrogateForProvider(parameterValue);
+-//				if (!surrogate.isEmpty()) {
+-//					parameterValue = surrogate;
+-//				}
+ 				break;
+ 		
+ 		case all : parameterValue = "%";
+@@ -673,17 +669,6 @@ public class IndicatorTemplateXML {
+ 		this.providerNo = providerNo;
+ 	}
+ 	
+-//	/**
+-//	 *Retrieve provider for which current provider is acting as a surrogate.
+-//	 */
+-//	public static String surrogateForProvider(String surrogate_providerNo) {
+-//		PropertyDao dao = SpringUtils.getBean(PropertyDao.class);
+-//		List<Property> props = dao.findByNameAndProvider("surrogate_for_provider", surrogate_providerNo);
+-//		if(props.size()>0) {
+-//			return props.get(0).getValue();
+-//		}
+-//		return new String();
+-//	}
+ 	
+ 	public void setSharedMetricLabel(String sharedMetricLabel) {
+ 		this.sharedMetricLabel = sharedMetricLabel;
+diff --git a/src/main/java/org/oscarehr/managers/DashboardManager.java b/src/main/java/org/oscarehr/managers/DashboardManager.java
+index 53ac78919b..d67adfe606 100644
+--- a/src/main/java/org/oscarehr/managers/DashboardManager.java
++++ b/src/main/java/org/oscarehr/managers/DashboardManager.java
+@@ -567,7 +567,7 @@ public class DashboardManager {
+         }
+ 		
+ 		IndicatorTemplateXML indicatorTemplateXML = getIndicatorTemplateXML( loggedInInfo, indicatorId );
+-
++		
+ 		// The id needs to be force set.
+ 		if( indicatorTemplateXML != null ) {
+ 			indicatorTemplateXML.setId( indicatorId );
+@@ -634,66 +634,66 @@ public class DashboardManager {
+ 	
+ 	
+ 	public String getSharedOutcomesDashboardLaunchURL(LoggedInInfo loggedInInfo) {
+-
++		
+ 		String url = OscarProperties.getInstance().getProperty("shared_outcomes_dashboard_url");
+-		if (url == null) {
++		if(url == null) {
+ 			return null;
+ 		}
+-
++		
+ 		org.oscarehr.common.model.Clinic oClinic = clinicDAO.getClinic();
+-		Clinic clinic = new Clinic();
+-		clinic.setApplication("oscar");
+-
+-		String clinicIdentifier = OscarProperties.getInstance().getProperty("shared_outcomes_dashboard_clinic_id");
+-
+-		if (clinicIdentifier == null || clinicIdentifier.length() == 0 || clinicIdentifier.length() > 42) {
++    	Clinic clinic = new Clinic();
++    	clinic.setApplication("oscar");
++    	
++    	String clinicIdentifier = OscarProperties.getInstance().getProperty("shared_outcomes_dashboard_clinic_id");
++		
++		if(clinicIdentifier == null || clinicIdentifier.length() == 0 || clinicIdentifier.length() > 42 ) {
+ 			clinicIdentifier = oClinic.getClinicName();
+ 		}
+-
++		
+ 		clinic.setIdentifier(clinicIdentifier);
+-
+-		clinic.setName(oClinic.getClinicName());
+-
+-
+-		Provider provider = loggedInInfo.getLoggedInProvider();
+-
+-		User user = new User();
+-		user.setCity("");
+-		user.setFirstName(provider.getFirstName());
+-		//TODO: not sure yet how we want to implement this
+-		//user.setAuthorizedUsernameList(null);
+-		user.setLastName(provider.getLastName());
+-		user.setPostalCode("");
+-		user.setProvince(Province.ON);
+-		//user.setUniqueIdentifier(uniqueIdentifier);
+-		user.setUsername(provider.getProviderNo());
+-		user.setRole("provider");
+-
+-
++		
++    	clinic.setName(oClinic.getClinicName());
++    	
++    	
++    	Provider provider = loggedInInfo.getLoggedInProvider();
++    	
++    	User user = new User();
++    	user.setCity("");
++    	user.setFirstName(provider.getFirstName());
++    	//TODO: not sure yet how we want to implement this
++    	//user.setAuthorizedUsernameList(null);
++    	user.setLastName(provider.getLastName());
++    	user.setPostalCode("");
++    	user.setProvince(Province.ON);
++    	//user.setUniqueIdentifier(uniqueIdentifier);
++    	user.setUsername(provider.getProviderNo());
++    	user.setRole("provider");
++    	
++    	
+ 		JSONObject response = new JSONObject();
+ 		response.put("clinic", clinic);
+ 		response.put("user", user);
+-
++		
+ 		String json = response.toString();
+-
++		
+ 		logger.debug(json);
+-
++		
+ 		String encrypted = null;
+ 		String b64 = null;
+-
++		
+ 		//system must have the UnlimitedJCEPolicyJDK7.zip installed for this to work
+ 		try {
+ 			Security.addProvider(new BouncyCastleProvider());
+-
++			
+ 			StandardPBEStringEncryptor encrypter = new StandardPBEStringEncryptor();
+ 			encrypter.setAlgorithm("PBEWITHSHA256AND256BITAES-CBC-BC");
+ 			encrypter.setProviderName("BC");
+-			encrypter.setPassword(OscarProperties.getInstance().getProperty("shared_outcomes_dashboard_key"));
++			encrypter.setPassword(OscarProperties.getInstance().getProperty("shared_outcomes_dashboard_key"));			
+ 			encrypted = encrypter.encrypt(json);
+ 			b64 = Base64.toBase64String(encrypted.getBytes());
+-		} catch (Exception e) {
+-			logger.error("error", e);
+-		}
++	       } catch(Exception e) {
++	    	  logger.error("error",e);
++	       }
+ 
+ 		return url + "?" + "encodedParams=" + b64 + "&version=1.1";
+ 	}
+diff --git a/src/main/java/org/oscarehr/provider/web/DashboardUserPreferenceAction.java b/src/main/java/org/oscarehr/provider/web/DashboardUserPreferenceAction.java
+deleted file mode 100644
+index d269f25c24..0000000000
+--- a/src/main/java/org/oscarehr/provider/web/DashboardUserPreferenceAction.java
++++ /dev/null
+@@ -1,97 +0,0 @@
+-/**
+- * Copyright (c) 2013-2015. Department of Computer Science, University of Victoria. All Rights Reserved.
+- * This software is published under the GPL GNU General Public License.
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License
+- * as published by the Free Software Foundation; either version 2
+- * of the License, or (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, write to the Free Software
+- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+- *
+- * This software was written for the
+- * Department of Computer Science
+- * LeadLab
+- * University of Victoria
+- * Victoria, Canada
+- */
+-
+-package org.oscarehr.provider.web;
+-
+-import javax.servlet.http.HttpServletRequest;
+-import javax.servlet.http.HttpServletResponse;
+-
+-import org.apache.struts.action.ActionForm;
+-import org.apache.struts.action.ActionForward;
+-import org.apache.struts.action.ActionMapping;
+-import org.apache.struts.actions.DispatchAction;
+-import org.oscarehr.common.dao.UserPropertyDAO;
+-import org.oscarehr.common.model.UserProperty;
+-import org.oscarehr.util.LoggedInInfo;
+-import org.oscarehr.util.SpringUtils;
+-import org.apache.log4j.Logger;
+-
+-public class DashboardUserPreferenceAction extends DispatchAction {
+-
+-	private UserPropertyDAO dao = (UserPropertyDAO)SpringUtils.getBean("UserPropertyDAO");
+-	private Logger logger = org.oscarehr.util.MiscUtils.getLogger();
+-	
+-	@Override	   
+-	public ActionForward unspecified(ActionMapping mapping, ActionForm actionform, HttpServletRequest request, HttpServletResponse response) {	
+-		logger.info("here in unspecified");
+-		return view(mapping, actionform, request, response);	   
+-	}
+-	   
+-	public ActionForward view(ActionMapping mapping, ActionForm actionform, HttpServletRequest request, HttpServletResponse response) {
+-		LoggedInInfo loggedInInfo=LoggedInInfo.getLoggedInInfoFromSession(request);
+-		String providerNo=loggedInInfo.getLoggedInProviderNo();
+-		UserProperty prop = dao.getProp(providerNo, "surrogate_for_provider");
+-		logger.info("here in view with prop=" + prop);
+-		if(prop != null)
+-			request.setAttribute("dashboardUser", prop.getValue());
+-
+-		prop = dao.getProp(providerNo, "dashboard_share");
+-		if(prop != null)
+-			request.setAttribute("shareDashboard", prop.getValue());
+-
+-		return mapping.findForward("form");	   
+-	}
+-	
+-	public ActionForward save(ActionMapping mapping, ActionForm actionform, HttpServletRequest request, HttpServletResponse response) {
+-		String dashUser = request.getParameter("dashboardUser");
+-		String shareDash = request.getParameter("shareDashboard");
+-		LoggedInInfo loggedInInfo=LoggedInInfo.getLoggedInInfoFromSession(request);
+-		String providerNo=loggedInInfo.getLoggedInProviderNo();
+-		logger.info("here in save with dashUser="+dashUser);
+-		logger.info("and shareDash="+shareDash);
+-		if(dashUser != null ) {
+-			UserProperty prop = dao.getProp(providerNo, "surrogate_for_provider");
+-			if(prop == null) {
+-				prop = new UserProperty();
+-				prop.setName("surrogate_for_provider");
+-				prop.setProviderNo(providerNo);				
+-			}
+-			prop.setValue(dashUser);
+-			dao.saveProp(prop);
+-		}
+-		
+-		if(shareDash != null ) {
+-			UserProperty prop = dao.getProp(providerNo, "dashboard_share");
+-			if(prop == null) {
+-				prop = new UserProperty();
+-				prop.setName("dashboard_share");
+-				prop.setProviderNo(providerNo);				
+-			}
+-			prop.setValue(shareDash);
+-			dao.saveProp(prop);
+-		}
+-		
+-		return view(mapping,actionform,request,response);
+-	}
+-}
+diff --git a/src/main/resources/oscarResources_en.properties b/src/main/resources/oscarResources_en.properties
+index aebadcd98f..10a4f8558a 100644
+--- a/src/main/resources/oscarResources_en.properties
++++ b/src/main/resources/oscarResources_en.properties
+@@ -7299,7 +7299,6 @@ URL=Url
+ 
+ provider.cppPrefs=Configure eChart CPP
+ provider.olisPrefs=OLIS Preferences
+-provider.dashboardUserPrefs=Dashboard User Preference
+ 
+ appointment.searchnext.title=SEARCH RESULTS
+ appointment.searchnext.2ndtitle=SEARCH FOR NEXT AVAILABLE APPOINTMENT
+diff --git a/src/main/webapp/WEB-INF/struts-config.xml b/src/main/webapp/WEB-INF/struts-config.xml
+index 890c06cc9c..0f595b448b 100644
+--- a/src/main/webapp/WEB-INF/struts-config.xml
++++ b/src/main/webapp/WEB-INF/struts-config.xml
+@@ -2462,10 +2462,6 @@
+ 			<forward name="form" path="/provider/olis_preferences.jsp" />
+ 		</action>
+ 
+-		<action path="/provider/DashboardUserPreference" type="org.oscarehr.provider.web.DashboardUserPreferenceAction" parameter="method" scope="request" validate="false" input="/provider/dashboard_user_preference.jsp">
+-			<forward name="form" path="/provider/dashboard_user_preference.jsp" />
+-		</action>
+-
+ 		<action path="/eyeform/ExaminationHistory" type="org.oscarehr.eyeform.web.ExaminationHistoryAction" parameter="method">
+ 			<forward name="success" path="/eyeform/examination_history.jsp" />
+ 			<forward name="results" path="/eyeform/examination_history_results.jsp" />
+diff --git a/src/main/webapp/provider/dashboard_user_preference.jsp b/src/main/webapp/provider/dashboard_user_preference.jsp
+deleted file mode 100644
+index c8ebdc6e65..0000000000
+--- a/src/main/webapp/provider/dashboard_user_preference.jsp
++++ /dev/null
+@@ -1,143 +0,0 @@
+-<%--
+-
+-    Copyright (c) 2008-2012 Indivica Inc.
+-
+-    This software is made available under the terms of the
+-    GNU General Public License, Version 2, 1991 (GPLv2).
+-    License details are available via "indivica.ca/gplv2"
+-    and "gnu.org/licenses/gpl-2.0.html".
+-
+---%>
+-
+-<%--
+-
+-	Copyright (c) 2013-2015. Department of Computer Science, University of Victoria. All Rights Reserved.
+-	This software is published under the GPL GNU General Public License.
+-	This program is free software; you can redistribute it and/or
+-	modify it under the terms of the GNU General Public License
+-	as published by the Free Software Foundation; either version 2
+-	of the License, or (at your option) any later version.
+-	
+-	This program is distributed in the hope that it will be useful,
+-	but WITHOUT ANY WARRANTY; without even the implied warranty of
+-	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+-	GNU General Public License for more details.
+-	
+-	You should have received a copy of the GNU General Public License
+-	along with this program; if not, write to the Free Software
+-	Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+-	
+-	This software was written for the
+-	Department of Computer Science
+-	LeadLab
+-	University of Victoria
+-	Victoria, Canada
+-
+---%>
+-
+-<%@ include file="/casemgmt/taglibs.jsp"%>
+-<%@page import="java.util.*" %>
+-<%@page import="org.apache.log4j.Logger" %>
+-<%@page import="org.oscarehr.util.SpringUtils" %>
+-<%@page import="org.oscarehr.common.model.Provider,org.oscarehr.PMmodule.dao.ProviderDao"%>
+-<%
+-Logger logger = org.oscarehr.util.MiscUtils.getLogger();
+-//Get list of providers           
+-String curProviderNo = (String) session.getAttribute("user"); 
+-ProviderDao providerDao = (ProviderDao)SpringUtils.getBean("providerDao");
+-Provider provider = providerDao.getProvider(curProviderNo);
+-
+-logger.info("user: " + curProviderNo);
+-List<Provider> providerList = null;
+-providerList = providerDao.getBillableProviders();
+-// for (Provider p: providerList) {
+-//      logger.info("provider: " + p.getFullName());
+-// }
+-%>
+-
+-<%
+-//   String curUser_no;
+-//   curUser_no = (String) session.getAttribute("user");
+-
+-%>
+-<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"
+-   "http://www.w3.org/TR/html4/loose.dtd">
+-<c:set var="ctx" value="${pageContext.request.contextPath}" scope="request" />
+-<html:html>
+-<head>
+-<script type="text/javascript" src="<%= request.getContextPath() %>/js/global.js"></script>
+-<html:base />
+-<title><bean:message key="provider.dashboardUserPrefs" /></title>
+-
+-<link rel="stylesheet" type="text/css" href="../oscarEncounter/encounterStyles.css">
+-<link rel="stylesheet" type="text/css" media="all" href="<c:out value="${ctx}"/>/share/calendar/calendar.css" title="win2k-cold-1">
+-<script src="<c:out value="${ctx}"/>/share/javascript/prototype.js"	type="text/javascript"></script>
+-<script src="<c:out value="${ctx}"/>/share/javascript/scriptaculous.js"	type="text/javascript"></script>
+-<script src="<c:out value="${ctx}"/>/js/jquery.js"></script>
+-<script>
+-	jQuery.noConflict();
+-</script>
+-
+-
+-</head>
+-
+-<body class="BodyStyle" vlink="#0000FF">
+-
+-<table class="MainTable" id="scrollNumber1" name="encounterTable">
+-	<tr class="MainTableTopRow">
+-		<td class="MainTableTopRowLeftColumn"><bean:message key="provider.setNoteStaleDate.msgPrefs" /></td>
+-		<td style="color: white" class="MainTableTopRowRightColumn"><bean:message key="provider.dashboardUserPrefs" /></td>
+-	</tr>
+-	<tr>
+-		<td class="MainTableLeftColumn">&nbsp;</td>
+-		<td class="MainTableRightColumn">
+-			<!-- form starts here -->
+-			<form action="<c:out value="${ctx}"/>/provider/DashboardUserPreference.do?method=save" method="post">
+-			<table width="100%" border="1">
+-			<tr>
+-				<th width="20%">Default Dashboard User</th>
+-				<td colspan="3">
+-					<%
+-						String val1 = (String)request.getAttribute("dashboardUser");
+-						if(val1 == null) val1 = curProviderNo;
+-					%>
+-					<select id="dashboardUser" name="dashboardUser">
+-					<option value="" <%=(val1.equals("")?"selected=\"selected\"":"") %>></option>
+-					<%for(Provider p: providerList) {%>
+-						<option value="<%=p.getProviderNo()%>"<%=(val1.equals(p.getProviderNo())?"selected=\"selected\"":"") %>><%=p.getFullName()%></option>
+-						<%}%>
+-					</select>
+-				</td>
+-			</tr>
+-			<oscar:oscarPropertiesCheck property="billregion" value="ON">
+-			<tr>
+-				<th width="20%">Share With Ontario Common Dashboard</th>
+-				<td width="30%">
+-					<%
+-						val1 = (String)request.getAttribute("shareDashboard");
+-						if(val1 == null) val1 = "false";
+-					%>
+-					<select id="shareDashboard" name="shareDashboard">
+-						<option value="" <%=(val1.equals("")?"selected=\"selected\"":"") %>></option>
+-						<option value="true" <%=(val1.equals("true")?"selected=\"selected\"":"") %>>YES</option>
+-						<option value="false" <%=(val1.equals("false")?"selected=\"selected\"":"") %>>NO</option>
+-					</select>
+-			</td>
+-			</tr>
+-			</oscar:oscarPropertiesCheck>
+-								
+-			
+-		</table>
+-			<input type="submit" value="Save Changes"/>
+-			<input type="button" value="Close" onclick="window.close();"/>
+-			</form>
+-			<!-- end of form -->
+-		</td>
+-	</tr>
+-	<tr>
+-		<td class="MainTableBottomRowLeftColumn"></td>
+-		<td class="MainTableBottomRowRightColumn"></td>
+-	</tr>
+-</table>
+-</body>
+-</html:html>
+diff --git a/src/main/webapp/provider/providerpreference.jsp b/src/main/webapp/provider/providerpreference.jsp
+index 7eeac0c0a5..9283755dc5 100644
+--- a/src/main/webapp/provider/providerpreference.jsp
++++ b/src/main/webapp/provider/providerpreference.jsp
+@@ -742,11 +742,6 @@ Event.observe('rxInteractionWarningLevel', 'change', function(event) {
+       	<tr>
+           <td align="center"><a href=# onClick ="popupPage(400,860,'../provider/OlisPreferences.do');return false;"><bean:message key="provider.olisPrefs" /></a></td>
+       	</tr>
+-      	<security:oscarSec roleName="<%=roleName$%>" rights="r" objectName="_dashboardDisplay">
+-      	<tr>
+-          <td align="center"><a href=# onClick ="popupPage(400,860,'../provider/DashboardUserPreference.do');return false;"><bean:message key="provider.dashboardUserPrefs" /></a></td>
+-      	</tr>
+-      	</security:oscarSec>
+       	<tr>
+           <td align="center"><a href=# onClick ="popupPage(230,860,'../setProviderStaleDate.do?method=viewCommentLab');return false;"><bean:message key="provider.btnDisableAckCommentLab"/></a></td>
+         </tr>
+diff --git a/src/main/webapp/web/dashboard/display/DashboardDisplay.jsp b/src/main/webapp/web/dashboard/display/DashboardDisplay.jsp
+index 161dad78ea..7640bb36c0 100644
+--- a/src/main/webapp/web/dashboard/display/DashboardDisplay.jsp
++++ b/src/main/webapp/web/dashboard/display/DashboardDisplay.jsp
+@@ -77,37 +77,10 @@
+ 				</option>
+ 			</c:forEach>
+ 			</select>
+-			<input type="submit" value="Change Dashboard Provider"><%-- onclick="newWindow('<%=request.getContextPath()%>/web/dashboard/display/DashboardDisplay.do?method=getDashboard&dashboardId=${ dashboard.id }','dashboard'>)">--%>
++			<input type="submit" value="Change Dashboard Provider">
+ 		</form>
+ 	</div>
+ 	</center>
+-	<div class="form-group">
+-			<%--             <div class="dropdown btn-group" id="selectProviderDashboardButtonContainer">
+-                                 <button class="btn btn-default dropdown-toggle btn-md" type="button"
+-                                         id="providerDashboardMenu" data-toggle="dropdown" aria-haspopup="true" aria-expanded="true">
+-                                         <c:out value="Select provider" />
+-                                         <span class="caret"></span>
+-                                 </button>
+-                                 <ul class="dropdown-menu" aria-labelledby="providerDashboardMenu">
+-                                                 <li><c:out value="${ providers.get(1).getFullName() }" />
+-                                 abc
+-                                 def
+-                                                 </li>
+-                                 </ul>
+-                         </div>--%>
+-<%--		<center>
+-			<div class="col-md-6">
+-				<label></label>
+-				<select class="form-control required" name="providerNo" id="getDashboard_${ dashboard.id }" >
+-					<option value="${ preferredProvider.providerNo }"><c:out value="${ preferredProvider.fullName }"/></option>
+-					<c:forEach items="${ providers }" var="provider">
+-						<option value="${ provider.providerNo }">
+-							<c:out value="${ provider.formattedName }"/>
+-						</option>
+-					</c:forEach>
+-				</select>
+-			</div>
+-		</center>--%>
+ 	<div class="row dashboardSubHeading" >
+ 		<div class="col-md-6">
+ 			Last loaded: 
+@@ -122,7 +95,6 @@
+ 			</a>
+ 		</div>
+ 	</div>
+-	</div>
+ 	<!-- end Dashboard Heading -->
+ 	
+ 	<div class="row dashboardBody">	
+-- 
+2.17.1
+
+
+From 1de14f8f98d63020301b10a288df3294b575abcb Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Sat, 10 Nov 2018 22:28:13 -0800
+Subject: Removed redundant code
+
+---
+ .../oscarehr/dashboard/display/DisplayIndicatorAction.java    | 4 ++--
+ src/main/java/org/oscarehr/managers/DashboardManager.java     | 3 ---
+ 2 files changed, 2 insertions(+), 5 deletions(-)
+
+diff --git a/src/main/java/org/oscarehr/dashboard/display/DisplayIndicatorAction.java b/src/main/java/org/oscarehr/dashboard/display/DisplayIndicatorAction.java
+index 667502ef4c..63f36db665 100644
+--- a/src/main/java/org/oscarehr/dashboard/display/DisplayIndicatorAction.java
++++ b/src/main/java/org/oscarehr/dashboard/display/DisplayIndicatorAction.java
+@@ -44,7 +44,7 @@ public class DisplayIndicatorAction extends DispatchAction {
+ 	
+ 	private SecurityInfoManager securityInfoManager = SpringUtils.getBean(SecurityInfoManager.class);
+ 	private static DashboardManager dashboardManager = SpringUtils.getBean(DashboardManager.class);
+-
++	
+ 	public ActionForward unspecified(ActionMapping mapping, ActionForm form, 
+ 			HttpServletRequest request, HttpServletResponse response) {
+ 		return null;
+@@ -79,7 +79,7 @@ public class DisplayIndicatorAction extends DispatchAction {
+ 		}
+ 
+ 		request.setAttribute("indicatorPanel", indicatorPanelBean);
+-
++		
+ 		return mapping.findForward("success");
+ 	}
+ 
+diff --git a/src/main/java/org/oscarehr/managers/DashboardManager.java b/src/main/java/org/oscarehr/managers/DashboardManager.java
+index d67adfe606..b70901897a 100644
+--- a/src/main/java/org/oscarehr/managers/DashboardManager.java
++++ b/src/main/java/org/oscarehr/managers/DashboardManager.java
+@@ -510,9 +510,6 @@ public class DashboardManager {
+ 		IndicatorTemplate indicatorTemplate = getIndicatorTemplate( loggedInInfo, indicatorTemplateId );
+ 		IndicatorTemplateHandler templateHandler = new IndicatorTemplateHandler( loggedInInfo, indicatorTemplate.getTemplate().getBytes() );
+ 		IndicatorTemplateXML indicatorTemplateXML = templateHandler.getIndicatorTemplateXML();
+-		if (providerNo != null) {
+-			indicatorTemplateXML.setProviderNo(providerNo);
+-		}
+ 		
+ 		if( indicatorTemplate != null ) {
+ 			drilldownBeanFactory = new DrilldownBeanFactory( loggedInInfo, indicatorTemplate, providerNo, metricLabel ); 
+-- 
+2.17.1
+
+
+From 703fc0612e861978ff07f7c6e1a9f951c2d10a70 Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Sat, 10 Nov 2018 22:54:08 -0800
+Subject: Fixed export
+
+---
+ .../oscarehr/dashboard/admin/ExportResultsAction.java    | 9 ++++++++-
+ .../java/org/oscarehr/managers/DashboardManager.java     | 9 ++++++++-
+ 2 files changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/src/main/java/org/oscarehr/dashboard/admin/ExportResultsAction.java b/src/main/java/org/oscarehr/dashboard/admin/ExportResultsAction.java
+index 25eb96bac2..fb83133a20 100644
+--- a/src/main/java/org/oscarehr/dashboard/admin/ExportResultsAction.java
++++ b/src/main/java/org/oscarehr/dashboard/admin/ExportResultsAction.java
+@@ -58,7 +58,14 @@ public class ExportResultsAction extends Action  {
+ 		String indicatorId = request.getParameter("indicatorId");
+ 		String indicatorName = request.getParameter("indicatorName");		
+ 		OutputStream outputStream = null;
+-		String csvFile = dashboardManager.exportDrilldownQueryResultsToCSV( loggedInInfo, Integer.parseInt( indicatorId ) );
++
++		String providerNo = dashboardManager.getRequestedProviderNo(loggedInInfo);
++		String csvFile;
++		if (providerNo != null) {
++			csvFile = dashboardManager.exportDrilldownQueryResultsToCSV(loggedInInfo, providerNo, Integer.parseInt(indicatorId));
++		} else {
++			csvFile = dashboardManager.exportDrilldownQueryResultsToCSV(loggedInInfo, Integer.parseInt(indicatorId));
++		}
+ 		
+ 		if( indicatorName == null || indicatorName.isEmpty() ) {
+ 			indicatorName = "indicator_data-" + System.currentTimeMillis() + ".csv";
+diff --git a/src/main/java/org/oscarehr/managers/DashboardManager.java b/src/main/java/org/oscarehr/managers/DashboardManager.java
+index b70901897a..71a6db274a 100644
+--- a/src/main/java/org/oscarehr/managers/DashboardManager.java
++++ b/src/main/java/org/oscarehr/managers/DashboardManager.java
+@@ -528,8 +528,12 @@ public class DashboardManager {
+ 		return drilldownBean;
+ 
+ 	}
+-	
++
+ 	public String exportDrilldownQueryResultsToCSV( LoggedInInfo loggedInInfo, int indicatorId ) {
++		return exportDrilldownQueryResultsToCSV(loggedInInfo, null, indicatorId);
++	}
++	
++	public String exportDrilldownQueryResultsToCSV( LoggedInInfo loggedInInfo, String providerNo, int indicatorId ) {
+ 		
+ 		if( ! securityInfoManager.hasPrivilege(loggedInInfo, "_dashboardDrilldown", SecurityInfoManager.READ, null ) ) {	
+ 			LogAction.addLog(loggedInInfo, "DashboardManager.exportDrilldownQueryResultsToCSV", null, null, null,"User missing _dashboardDrilldown role with read access");
+@@ -537,6 +541,9 @@ public class DashboardManager {
+         }
+ 		
+ 		IndicatorTemplateXML templateXML = getIndicatorTemplateXML( loggedInInfo, indicatorId );
++		if (providerNo != null) {
++			templateXML.setProviderNo(providerNo);
++		}
+ 
+ 		ExportQueryHandler exportQueryHandler = SpringUtils.getBean( ExportQueryHandler.class );
+ 		exportQueryHandler.setLoggedInInfo( loggedInInfo );
+-- 
+2.17.1
+
+
+From e30495bdb578e7939b27f7f8ec7cbbe64283e6c1 Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Sun, 11 Nov 2018 09:37:03 -0800
+Subject: Added security object for changing dashboard user
+
+---
+ database/mysql/oscardata.sql                  |  1 +
+ database/mysql/updates/update-2018-11-11.sql  |  1 +
+ .../display/DisplayDashboardAction.java       | 34 ++++++++++++-------
+ 3 files changed, 23 insertions(+), 13 deletions(-)
+ create mode 100644 database/mysql/updates/update-2018-11-11.sql
+
+diff --git a/database/mysql/oscardata.sql b/database/mysql/oscardata.sql
+index 4c0be8efde..ec9e4a5c91 100644
+--- a/database/mysql/oscardata.sql
++++ b/database/mysql/oscardata.sql
+@@ -1851,6 +1851,7 @@ insert into `secObjectName` (`objectName`) values ('_admin.consult');
+ insert into `secObjectName` (`objectName`) values ('_dashboardManager');
+ insert into `secObjectName` (`objectName`) values ('_dashboardDisplay');
+ insert into `secObjectName` (`objectName`) values ('_dashboardDrilldown');
++insert into `secObjectName` (`objectName`) values ('_dashboardChgUser');
+ 
+ insert into `secObjectName` (`objectName`) values ('_admin.demographic');
+ 
+diff --git a/database/mysql/updates/update-2018-11-11.sql b/database/mysql/updates/update-2018-11-11.sql
+new file mode 100644
+index 0000000000..7c694ee206
+--- /dev/null
++++ b/database/mysql/updates/update-2018-11-11.sql
+@@ -0,0 +1 @@
++insert into `secObjectName` (`objectName`) values ('_dashboardChgUser');
+diff --git a/src/main/java/org/oscarehr/dashboard/display/DisplayDashboardAction.java b/src/main/java/org/oscarehr/dashboard/display/DisplayDashboardAction.java
+index fa8faa8c12..18cda90630 100644
+--- a/src/main/java/org/oscarehr/dashboard/display/DisplayDashboardAction.java
++++ b/src/main/java/org/oscarehr/dashboard/display/DisplayDashboardAction.java
+@@ -39,6 +39,8 @@ import org.oscarehr.util.LoggedInInfo;
+ import org.oscarehr.util.SpringUtils;
+ import org.apache.log4j.Logger;
+ import org.oscarehr.util.MiscUtils;
++
++import java.util.ArrayList;
+ import java.util.List;
+ 
+ public class DisplayDashboardAction extends DispatchAction {
+@@ -61,27 +63,33 @@ public class DisplayDashboardAction extends DispatchAction {
+ 		if( ! securityInfoManager.hasPrivilege(loggedInInfo, "_dashboardDisplay", SecurityInfoManager.READ, null ) ) {	
+ 			return mapping.findForward("unauthorized");
+         }
+-		
++        Boolean canChgDashboardUser = false;
++		if( securityInfoManager.hasPrivilege(loggedInInfo, "_dashboardChgUser", SecurityInfoManager.READ, null ) ) {
++			canChgDashboardUser = true;
++		}
++
+ 		String dashboardId = request.getParameter("dashboardId");
+ 		int id = 0;
+ 		if( dashboardId != null && ! dashboardId.isEmpty() ) {
+ 			id = Integer.parseInt( dashboardId );
+ 		}
+ 		
+-		Provider preferredProvider = null;
+-		String requestedProviderNo = request.getParameter("providerNo");
+-		if (requestedProviderNo != null && !requestedProviderNo.isEmpty()) {
+-			logger.info("DashboardDisplay of provider_no " + requestedProviderNo + " requested by provider_no " + loggedInInfo.getLoggedInProviderNo() );
+-			preferredProvider = providerManager.getProvider(loggedInInfo, requestedProviderNo);
+-			dashboardManager.setRequestedProviderNo(loggedInInfo, requestedProviderNo);
+-		} else if (dashboardManager.getRequestedProviderNo(loggedInInfo) != null) {
+-			preferredProvider = providerManager.getProvider(loggedInInfo, dashboardManager.getRequestedProviderNo(loggedInInfo));
+-		} else {
+-			preferredProvider = loggedInInfo.getLoggedInProvider();
++		Provider preferredProvider = loggedInInfo.getLoggedInProvider();
++		List<Provider> providers = new ArrayList<Provider>();
++
++		if (canChgDashboardUser) {
++			String requestedProviderNo = request.getParameter("providerNo");
++			if (requestedProviderNo != null && !requestedProviderNo.isEmpty()) {
++				logger.info("DashboardDisplay of provider_no " + requestedProviderNo + " requested by provider_no " + loggedInInfo.getLoggedInProviderNo());
++				preferredProvider = providerManager.getProvider(loggedInInfo, requestedProviderNo);
++				dashboardManager.setRequestedProviderNo(loggedInInfo, requestedProviderNo);
++			} else if (dashboardManager.getRequestedProviderNo(loggedInInfo) != null) {
++				preferredProvider = providerManager.getProvider(loggedInInfo, dashboardManager.getRequestedProviderNo(loggedInInfo));
++			}
++			providers = providerManager.getProviders(loggedInInfo, Boolean.TRUE);
+ 		}
++
+ 		request.setAttribute("preferredProvider", preferredProvider);
+-		
+-		List<Provider> providers = providerManager.getProviders(loggedInInfo, Boolean.TRUE);
+ 		request.setAttribute("providers", providers);
+ 
+ 		DashboardBean dashboard = dashboardManager.getDashboard(loggedInInfo, id);
+-- 
+2.17.1
+
+
+From 1208aa2c2049c28d98782966c9d3c81b55aca47d Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Sun, 11 Nov 2018 12:26:13 -0800
+Subject: Changed so change of user only visible when user has permission
+
+---
+ src/main/webapp/web/dashboard/display/DashboardDisplay.jsp | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/src/main/webapp/web/dashboard/display/DashboardDisplay.jsp b/src/main/webapp/web/dashboard/display/DashboardDisplay.jsp
+index 7640bb36c0..1aae36e501 100644
+--- a/src/main/webapp/web/dashboard/display/DashboardDisplay.jsp
++++ b/src/main/webapp/web/dashboard/display/DashboardDisplay.jsp
+@@ -27,6 +27,7 @@
+ <%@ taglib uri="/WEB-INF/struts-html.tld" prefix="html"%>
+ <%@ taglib uri="/WEB-INF/struts-bean.tld" prefix="bean"%>
+ <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
++<%@ taglib uri="http://java.sun.com/jsp/jstl/functions" prefix="fn"%>
+ 
+ <security:oscarSec roleName='${ sessionScope[userrole] }, ${ sessionScope[user] }' rights="w" objectName="_dashboardDisplay">
+ 	<c:redirect url="securityError.jsp?type=_dashboardDisplay" />
+@@ -67,6 +68,10 @@
+ 		<hr />
+ 	</div>
+ 	<center>
++	<c:if test="${fn:length(providers) eq 0}">
++	<b><c:out value="${ preferredProvider.fullName }"/></b>
++	</c:if>
++	<c:if test="${fn:length(providers) gt 0}">
+ 	<div class="dropdown">
+ 		<form action="<%=request.getContextPath()%>/web/dashboard/display/DashboardDisplay.do?method=getDashboard&dashboardId=${ dashboard.id }" method="post">
+ 			<select id="providerNo" name="providerNo">
+@@ -80,6 +85,8 @@
+ 			<input type="submit" value="Change Dashboard Provider">
+ 		</form>
+ 	</div>
++	</c:if>
++	<br>
+ 	</center>
+ 	<div class="row dashboardSubHeading" >
+ 		<div class="col-md-6">
+-- 
+2.17.1
+
+
+From 406fd2ffedc0112a79121efd07a36ea0a3945539 Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Sun, 11 Nov 2018 12:56:01 -0800
+Subject: Added doctors name to drilldown display
+
+---
+ .../dashboard/display/DisplayDrilldownAction.java        | 9 +++++++++
+ .../webapp/web/dashboard/display/DrilldownDisplay.jsp    | 1 +
+ 2 files changed, 10 insertions(+)
+
+diff --git a/src/main/java/org/oscarehr/dashboard/display/DisplayDrilldownAction.java b/src/main/java/org/oscarehr/dashboard/display/DisplayDrilldownAction.java
+index 886acb59d5..f5acfee1cc 100644
+--- a/src/main/java/org/oscarehr/dashboard/display/DisplayDrilldownAction.java
++++ b/src/main/java/org/oscarehr/dashboard/display/DisplayDrilldownAction.java
+@@ -36,9 +36,11 @@ import org.apache.struts.action.ActionMapping;
+ import org.apache.struts.actions.DispatchAction;
+ import org.oscarehr.PMmodule.dao.ProviderDao;
+ import org.oscarehr.common.model.IndicatorTemplate;
++import org.oscarehr.common.model.Provider;
+ import org.oscarehr.dashboard.display.beans.DrilldownBean;
+ import org.oscarehr.dashboard.handler.IndicatorTemplateHandler;
+ import org.oscarehr.managers.DashboardManager;
++import org.oscarehr.managers.ProviderManager2;
+ import org.oscarehr.managers.SecurityInfoManager;
+ import org.oscarehr.util.LoggedInInfo;
+ import org.oscarehr.util.MiscUtils;
+@@ -49,6 +51,7 @@ public class DisplayDrilldownAction extends DispatchAction  {
+ 	
+ 	private SecurityInfoManager securityInfoManager = SpringUtils.getBean(SecurityInfoManager.class);
+ 	private static DashboardManager dashboardManager = SpringUtils.getBean(DashboardManager.class);
++	private ProviderManager2 providerManager = SpringUtils.getBean( ProviderManager2.class );
+ 	private static Logger logger = MiscUtils.getLogger();
+ 	
+ 	public ActionForward unspecified(ActionMapping mapping, ActionForm form, 
+@@ -98,6 +101,12 @@ public class DisplayDrilldownAction extends DispatchAction  {
+ 			return mapping.findForward("error");
+ 		}
+ 
++		Provider preferredProvider = loggedInInfo.getLoggedInProvider();
++		if (dashboardManager.getRequestedProviderNo(loggedInInfo) != null) {
++			preferredProvider = providerManager.getProvider(loggedInInfo, dashboardManager.getRequestedProviderNo(loggedInInfo));
++		}
++		
++		request.setAttribute("preferredProvider",  preferredProvider);
+ 		request.setAttribute( "drilldown", drilldown );		
+ 		return mapping.findForward("success");
+ 	}
+diff --git a/src/main/webapp/web/dashboard/display/DrilldownDisplay.jsp b/src/main/webapp/web/dashboard/display/DrilldownDisplay.jsp
+index b69a869395..b1f4dc7ae9 100644
+--- a/src/main/webapp/web/dashboard/display/DrilldownDisplay.jsp
++++ b/src/main/webapp/web/dashboard/display/DrilldownDisplay.jsp
+@@ -91,6 +91,7 @@
+ 	<h3> 
+ 		<c:out value="${ drilldown.name }" />
+ 		<c:out value="${ drilldown.metricLabel }" />
++		<b><c:out value=": ${ preferredProvider.fullName }"/></b>
+ 	</h3>
+ 	<hr />
+ 	
+-- 
+2.17.1
+
+
+From beed8702fc3e8d2bfcf7f4bcf8e8574e53c4db4d Mon Sep 17 00:00:00 2001
+From: Raymond Rusk <Raymond.Rusk@shaw.ca>
+Date: Sun, 11 Nov 2018 13:30:54 -0800
+Subject: Protect against unset variables
+
+---
+ .../webapp/web/dashboard/display/DrilldownDisplay.jsp | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/src/main/webapp/web/dashboard/display/DrilldownDisplay.jsp b/src/main/webapp/web/dashboard/display/DrilldownDisplay.jsp
+index b1f4dc7ae9..ecf38435a7 100644
+--- a/src/main/webapp/web/dashboard/display/DrilldownDisplay.jsp
++++ b/src/main/webapp/web/dashboard/display/DrilldownDisplay.jsp
+@@ -91,7 +91,9 @@
+ 	<h3> 
+ 		<c:out value="${ drilldown.name }" />
+ 		<c:out value="${ drilldown.metricLabel }" />
++		<c:if test="${not empty preferredProvider}">
+ 		<b><c:out value=": ${ preferredProvider.fullName }"/></b>
++		</c:if>
+ 	</h3>
+ 	<hr />
+ 	
+@@ -382,6 +384,9 @@
+ 				<h4>Verify ICD9 Code For Addition To Disease Registry</h4>
+ 			</div>
+ 			<div class="modal-body">
++				<c:if test="${not empty preferredProvider}">
++				<p>Doctor: <c:out value="${ preferredProvider.fullName }" /></p>
++				</c:if>
+ 				<p>Are you sure you want to bulk add the following to the disease registry of the selected patients?</p>
+ 				<p>ICD9 Code: <span id="icd9code"></span></p>
+ 				<p>Description: <span id="icd9description"></span></p>
+@@ -406,6 +411,9 @@
+ 				<h4>Verify Patient Exclusion</h4>
+ 			</div>
+ 			<div class="modal-body">
++				<c:if test="${not empty preferredProvider}">
++				<p>Doctor: <c:out value="${ preferredProvider.fullName }" /></p>
++				</c:if>
+ 				<p>Are you sure you want to exclude the selected patients from this indicator?</p>
+ 				<div class="alert alert-warning">
+ 					Note that you will have to reload the dashboard before patients are excluded from the results you see (such as the drilldown table).
+@@ -431,6 +439,9 @@
+ 				<h4>Verify Patient Status Update</h4>
+ 			</div>
+ 			<div class="modal-body">
++				<c:if test="${not empty preferredProvider}">
++				<p>Doctor: <c:out value="${ preferredProvider.fullName }" /></p>
++				</c:if>
+ 				<p>Are you sure you want to update the status of the selected patients to inactive?</p>
+ 			</div>
+ 			<div class="modal-footer">
+-- 
+2.17.1
+

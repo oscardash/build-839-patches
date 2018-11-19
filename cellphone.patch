@@ -1,0 +1,195 @@
+From b105f177130d0b5d5a9d2a463da619e3b2dc6106 Mon Sep 17 00:00:00 2001
+From: Colcamex Resources Inc <dwarren@colcamex.com>
+Date: Wed, 24 Oct 2018 20:15:30 -0700
+Subject: origin/OSCAREMR-6597-patient-cell-phone-number-
+
+---
+ .../pageUtil/ConsultationPDFCreator.java            |  5 ++++-
+ .../pageUtil/EctConsultationFormRequestForm.java    | 13 +++++++++++--
+ .../pageUtil/EctConsultationFormRequestUtil.java    | 12 +++++++++++-
+ .../pageUtil/EctViewRequestAction.java              | 10 +++++++++-
+ src/main/resources/oscarResources_en.properties     |  4 +++-
+ .../ConsultationFormRequest.jsp                     |  6 ++++++
+ 6 files changed, 44 insertions(+), 6 deletions(-)
+
+diff --git a/src/main/java/oscar/oscarEncounter/oscarConsultationRequest/pageUtil/ConsultationPDFCreator.java b/src/main/java/oscar/oscarEncounter/oscarConsultationRequest/pageUtil/ConsultationPDFCreator.java
+index 2be88e0e82..90d2636f9f 100644
+--- a/src/main/java/oscar/oscarEncounter/oscarConsultationRequest/pageUtil/ConsultationPDFCreator.java
++++ b/src/main/java/oscar/oscarEncounter/oscarConsultationRequest/pageUtil/ConsultationPDFCreator.java
+@@ -374,8 +374,11 @@ public class ConsultationPDFCreator extends PdfPageEventHelper {
+ 
+ 		infoTable.addCell(setInfoCell(cell, getResource("msgWPhone")));
+ 		infoTable.addCell(setDataCell(cell, reqFrm.patientWPhone));
++		
++		infoTable.addCell(setInfoCell(cell, getResource("msgCellPhone")));
++		infoTable.addCell(setDataCell(cell, reqFrm.patientCellPhone));
+                 
+-                infoTable.addCell(setInfoCell(cell, getResource("msgEmail")));
++		infoTable.addCell(setInfoCell(cell, getResource("msgEmail")));
+ 		infoTable.addCell(setDataCell(cell, reqFrm.patientEmail));
+ 
+ 		infoTable.addCell(setInfoCell(cell, getResource("msgBirth")));
+diff --git a/src/main/java/oscar/oscarEncounter/oscarConsultationRequest/pageUtil/EctConsultationFormRequestForm.java b/src/main/java/oscar/oscarEncounter/oscarConsultationRequest/pageUtil/EctConsultationFormRequestForm.java
+index 892ccf225e..e9417b2c5c 100644
+--- a/src/main/java/oscar/oscarEncounter/oscarConsultationRequest/pageUtil/EctConsultationFormRequestForm.java
++++ b/src/main/java/oscar/oscarEncounter/oscarConsultationRequest/pageUtil/EctConsultationFormRequestForm.java
+@@ -96,7 +96,8 @@ public final class EctConsultationFormRequestForm extends ActionForm {
+ 	private String patientAddress;
+ 	private String patientPhone;
+ 	private String patientWPhone;
+-        private String patientEmail;
++	private String patientCellPhone;
++    private String patientEmail;
+ 	private String patientDOB;
+ 	private String patientSex;
+ 	private String patientHealthNum;
+@@ -419,8 +420,16 @@ public final class EctConsultationFormRequestForm extends ActionForm {
+ 	public void setPatientWPhone(String patientWPhone) {
+ 		this.patientWPhone = patientWPhone;
+ 	}
++	
++    public String getPatientCellPhone() {
++		return StringUtils.trimToEmpty(patientCellPhone);
++	}
++
++	public void setPatientCellPhone(String patientCellPhone) {
++		this.patientCellPhone = patientCellPhone;
++	}
+ 
+-        public void setPatientEmail(String patientEmail) {
++		public void setPatientEmail(String patientEmail) {
+             this.patientEmail = patientEmail;
+         }
+         
+diff --git a/src/main/java/oscar/oscarEncounter/oscarConsultationRequest/pageUtil/EctConsultationFormRequestUtil.java b/src/main/java/oscar/oscarEncounter/oscarConsultationRequest/pageUtil/EctConsultationFormRequestUtil.java
+index ccfe09feba..5132dcfccb 100644
+--- a/src/main/java/oscar/oscarEncounter/oscarConsultationRequest/pageUtil/EctConsultationFormRequestUtil.java
++++ b/src/main/java/oscar/oscarEncounter/oscarConsultationRequest/pageUtil/EctConsultationFormRequestUtil.java
+@@ -39,8 +39,10 @@ import org.oscarehr.common.model.Clinic;
+ import org.oscarehr.common.model.ConsultationRequest;
+ import org.oscarehr.common.model.ConsultationServices;
+ import org.oscarehr.common.model.Demographic;
++import org.oscarehr.common.model.DemographicExt;
+ import org.oscarehr.common.model.ProfessionalSpecialist;
+ import org.oscarehr.common.model.Provider;
++import org.oscarehr.common.model.DemographicExt.DemographicProperty;
+ import org.oscarehr.managers.DemographicManager;
+ import org.oscarehr.util.LoggedInInfo;
+ import org.oscarehr.util.MiscUtils;
+@@ -57,6 +59,7 @@ public class EctConsultationFormRequestUtil {
+ 	public String patientAddress;
+ 	public String patientPhone;
+ 	public String patientWPhone;
++	public String patientCellPhone;
+ 	public String patientEmail;
+ 	public String patientDOB;
+ 	public String patientHealthNum;
+@@ -112,8 +115,14 @@ public class EctConsultationFormRequestUtil {
+ 
+ 	public boolean estPatient(LoggedInInfo loggedInInfo, String demographicNo) {
+ 
+-		Demographic demographic = demographicManager.getDemographic(loggedInInfo, Integer.parseInt(demographicNo));
++		int demographic_number = Integer.parseInt(demographicNo);
++		Demographic demographic = demographicManager.getDemographic(loggedInInfo, demographic_number);
+ 		boolean estPatient = false;
++        DemographicExt demographicExt = demographicManager.getDemographicExt(loggedInInfo, demographic_number, DemographicProperty.demo_cell);
++        String demographicCellPhone = "";
++        if(demographicExt != null) {		
++        	demographicCellPhone = demographicExt.getValue();
++    	}
+ 
+ 		if (demographic != null) {
+ 			demoNo = demographicNo;
+@@ -129,6 +138,7 @@ public class EctConsultationFormRequestUtil {
+ 			patientAddress = patientAddressSb.toString();
+ 			patientPhone = StringUtils.noNull(demographic.getPhone());
+ 			patientWPhone = StringUtils.noNull(demographic.getPhone2());
++			patientCellPhone = StringUtils.noNull(demographicCellPhone);
+ 			patientEmail = StringUtils.noNull(demographic.getEmail());
+ 			patientDOB = demographic.getFormattedDob();
+ 			patientHealthNum = StringUtils.noNull(demographic.getHin());
+diff --git a/src/main/java/oscar/oscarEncounter/oscarConsultationRequest/pageUtil/EctViewRequestAction.java b/src/main/java/oscar/oscarEncounter/oscarConsultationRequest/pageUtil/EctViewRequestAction.java
+index 39d919aa89..ab20cd48c5 100644
+--- a/src/main/java/oscar/oscarEncounter/oscarConsultationRequest/pageUtil/EctViewRequestAction.java
++++ b/src/main/java/oscar/oscarEncounter/oscarConsultationRequest/pageUtil/EctViewRequestAction.java
+@@ -51,6 +51,8 @@ import org.oscarehr.common.hl7.v2.oscar_to_oscar.OscarToOscarUtils;
+ import org.oscarehr.common.hl7.v2.oscar_to_oscar.RefI12;
+ import org.oscarehr.common.model.ConsultationRequest;
+ import org.oscarehr.common.model.Demographic;
++import org.oscarehr.common.model.DemographicExt;
++import org.oscarehr.common.model.DemographicExt.DemographicProperty;
+ import org.oscarehr.common.model.Hl7TextMessage;
+ import org.oscarehr.common.model.ProfessionalSpecialist;
+ import org.oscarehr.common.model.Provider;
+@@ -156,7 +158,11 @@ public class EctViewRequestAction extends Action {
+ 
+             DemographicManager demographicManager = SpringUtils.getBean(DemographicManager.class);
+             Demographic demo = demographicManager.getDemographic(loggedInInfo, consult.getDemographicId());
+-
++            DemographicExt demographicExt = demographicManager.getDemographicExt(loggedInInfo, consult.getDemographicId(), DemographicProperty.demo_cell);
++            String demographicCellPhone = "";
++            if(demographicExt != null) {		
++            	demographicCellPhone = demographicExt.getValue();
++        	}
+             thisForm.setPatientAddress(demo.getAddress());
+             thisForm.setPatientDOB(demo.getFormattedDob());
+             thisForm.setPatientHealthNum(demo.getHin());
+@@ -167,6 +173,7 @@ public class EctViewRequestAction extends Action {
+             thisForm.setPatientPhone(demo.getPhone());
+             thisForm.setPatientSex(demo.getSex());
+             thisForm.setPatientWPhone(demo.getPhone2());
++            thisForm.setPatientCellPhone(demographicCellPhone);
+             thisForm.setPatientEmail(demo.getEmail());
+             thisForm.setPatientAge(demo.getAge());
+ 
+@@ -215,6 +222,7 @@ public class EctViewRequestAction extends Action {
+         thisForm.setPatientPhone(consultUtil.patientPhone);
+         thisForm.setPatientSex(consultUtil.patientSex);
+         thisForm.setPatientWPhone(consultUtil.patientWPhone);
++        thisForm.setPatientCellPhone(consultUtil.patientCellPhone);
+         thisForm.setPatientEmail(consultUtil.patientEmail);
+         thisForm.setPatientAge(consultUtil.patientAge);
+         
+diff --git a/src/main/resources/oscarResources_en.properties b/src/main/resources/oscarResources_en.properties
+index 37a23a4cea..10a4f8558a 100644
+--- a/src/main/resources/oscarResources_en.properties
++++ b/src/main/resources/oscarResources_en.properties
+@@ -2223,6 +2223,7 @@ oscarEncounter.oscarConsultationRequest.ConsultationFormRequest.msgPatient=Patie
+ oscarEncounter.oscarConsultationRequest.ConsultationFormRequest.msgAddress=Address
+ oscarEncounter.oscarConsultationRequest.ConsultationFormRequest.msgPhone=Tel.No.
+ oscarEncounter.oscarConsultationRequest.ConsultationFormRequest.msgWPhone=Work No.
++oscarEncounter.oscarConsultationRequest.ConsultationFormRequest.msgCellPhone=Cell No.
+ oscarEncounter.oscarConsultationRequest.ConsultationFormRequest.msgBirthDate=Birthdate
+ oscarEncounter.oscarConsultationRequest.ConsultationFormRequest.msgSex=Sex
+ oscarEncounter.oscarConsultationRequest.ConsultationFormRequest.msgHealthCard=Health Card No.
+@@ -2303,8 +2304,9 @@ oscarEncounter.oscarConsultationRequest.consultationFormPrint.msgDate=Date
+ oscarEncounter.oscarConsultationRequest.consultationFormPrint.msgStatus=Status
+ oscarEncounter.oscarConsultationRequest.consultationFormPrint.msgService=Service
+ oscarEncounter.oscarConsultationRequest.consultationFormPrint.msgConsultant=Consultant
+-oscarEncounter.oscarConsultationRequest.consultationFormPrint.msgPhone=Phone
++oscarEncounter.oscarConsultationRequest.consultationFormPrint.msgPhone=Home Phone
+ oscarEncounter.oscarConsultationRequest.consultationFormPrint.msgWPhone=Work Phone
++oscarEncounter.oscarConsultationRequest.consultationFormPrint.msgCellPhone=Cell Phone
+ oscarEncounter.oscarConsultationRequest.consultationFormPrint.msgEmail=Email
+ oscarEncounter.oscarConsultationRequest.consultationFormPrint.msgFax=Fax
+ oscarEncounter.oscarConsultationRequest.consultationFormPrint.msgAddr=Address
+diff --git a/src/main/webapp/oscarEncounter/oscarConsultationRequest/ConsultationFormRequest.jsp b/src/main/webapp/oscarEncounter/oscarConsultationRequest/ConsultationFormRequest.jsp
+index 0141e6874a..89bc5c973c 100644
+--- a/src/main/webapp/oscarEncounter/oscarConsultationRequest/ConsultationFormRequest.jsp
++++ b/src/main/webapp/oscarEncounter/oscarConsultationRequest/ConsultationFormRequest.jsp
+@@ -1823,6 +1823,12 @@ function updateFaxButton() {
+ 								key="oscarEncounter.oscarConsultationRequest.ConsultationFormRequest.msgWPhone" />:
+ 							</td>
+ 							<td class="tite2"><%=thisForm.getPatientWPhone()%></td>
++						</tr>
++												<tr>
++							<td class="tite4"><bean:message
++								key="oscarEncounter.oscarConsultationRequest.ConsultationFormRequest.msgCellPhone" />:
++							</td>
++							<td class="tite2"><%=thisForm.getPatientCellPhone()%></td>
+ 						</tr>
+                                                 <tr>
+ 							<td class="tite4"><bean:message
+-- 
+2.17.1
+
